@@ -48,6 +48,8 @@ const MARKDOWN_CHAR_LIMIT = 140_000;
 const MARKDOWN_PARSE_LIMIT = 40_000;
 const MARKDOWN_CACHE_LIMIT = 200;
 const MARKDOWN_CACHE_MAX_CHARS = 50_000;
+const MARKDOWN_MAX_LINE_LENGTH = 6_000;
+const MARKDOWN_BRACKET_PAIR_LIMIT = 1_500;
 const markdownCache = new Map<string, string>();
 
 function getCachedMarkdown(key: string): string | null {
@@ -115,14 +117,56 @@ export function toSanitizedMarkdownHtml(markdown: string): string {
     }
     return sanitized;
   }
-  const rendered = marked.parse(`${truncated.text}${suffix}`, {
-    renderer: htmlEscapeRenderer,
-  }) as string;
+  const markdownText = `${truncated.text}${suffix}`;
+  if (isLikelyPathologicalMarkdown(markdownText)) {
+    const escaped = escapeHtml(markdownText);
+    const html = `<pre class="code-block">${escaped}</pre>`;
+    const sanitized = DOMPurify.sanitize(html, sanitizeOptions);
+    if (input.length <= MARKDOWN_CACHE_MAX_CHARS) {
+      setCachedMarkdown(input, sanitized);
+    }
+    return sanitized;
+  }
+
+  let rendered = "";
+  try {
+    rendered = marked.parse(markdownText, {
+      renderer: htmlEscapeRenderer,
+    }) as string;
+  } catch {
+    const escaped = escapeHtml(markdownText);
+    const html = `<pre class="code-block">${escaped}</pre>`;
+    const sanitized = DOMPurify.sanitize(html, sanitizeOptions);
+    if (input.length <= MARKDOWN_CACHE_MAX_CHARS) {
+      setCachedMarkdown(input, sanitized);
+    }
+    return sanitized;
+  }
+
   const sanitized = DOMPurify.sanitize(rendered, sanitizeOptions);
   if (input.length <= MARKDOWN_CACHE_MAX_CHARS) {
     setCachedMarkdown(input, sanitized);
   }
   return sanitized;
+}
+
+function isLikelyPathologicalMarkdown(value: string): boolean {
+  if (!value) {
+    return false;
+  }
+  const lines = value.split("\n");
+  for (const line of lines) {
+    if (line.length > MARKDOWN_MAX_LINE_LENGTH) {
+      return true;
+    }
+  }
+  const openBrackets = (value.match(/\[/g) || []).length;
+  const closeBrackets = (value.match(/\]/g) || []).length;
+  const openParens = (value.match(/\(/g) || []).length;
+  const closeParens = (value.match(/\)/g) || []).length;
+  const bracketPairs = Math.min(openBrackets, closeBrackets);
+  const parenPairs = Math.min(openParens, closeParens);
+  return bracketPairs > MARKDOWN_BRACKET_PAIR_LIMIT || parenPairs > MARKDOWN_BRACKET_PAIR_LIMIT;
 }
 
 // Prevent raw HTML in chat messages from being rendered as formatted HTML.
