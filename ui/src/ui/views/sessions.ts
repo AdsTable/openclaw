@@ -114,11 +114,19 @@ export function renderSessions(props: SessionsProps) {
       <div class="row" style="justify-content: space-between;">
         <div>
           <div class="card-title">Sessions</div>
-          <div class="card-sub">Active session keys and per-session overrides.</div>
+          <div class="card-sub">Inspect active sessions and adjust per-session defaults.</div>
         </div>
-        <button class="btn" ?disabled=${props.loading} @click=${props.onRefresh}>
-          ${props.loading ? "Loading…" : "Refresh"}
-        </button>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <a
+            href="/history"
+            target="_blank"
+            class="btn"
+            title="View archived session history"
+          >&#128220; History</a>
+          <button class="btn" ?disabled=${props.loading} @click=${props.onRefresh}>
+            ${props.loading ? "Loading…" : "Refresh"}
+          </button>
+        </div>
       </div>
 
       <div class="filters" style="margin-top: 14px;">
