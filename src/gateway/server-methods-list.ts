@@ -34,6 +34,7 @@ const BASE_METHODS = [
   "talk.mode",
   "models.list",
   "agents.list",
+  "agents.auth.check",
   "agents.create",
   "agents.update",
   "agents.delete",

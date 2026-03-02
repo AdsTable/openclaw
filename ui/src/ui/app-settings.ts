@@ -218,6 +218,26 @@ export async function refreshActiveTab(host: SettingsHost) {
         void loadCron(host);
       }
     }
+    // Scenario 1: check current primary model key on tab open
+    const app = host as unknown as OpenClawApp;
+    if (app.client) {
+      const cfg = app.configForm as { agents?: { defaults?: { model?: unknown } } } | null;
+      const model = cfg?.agents?.defaults?.model;
+      const primary =
+        typeof model === "string" ? model : (model as { primary?: string } | null)?.primary ?? null;
+      const provider = primary ? primary.split("/")[0] : null;
+      if (provider) {
+        app.agentsModelKeyError = null;
+        void app.client
+          .request<{ valid: boolean; provider: string }>("agents.auth.check", { provider })
+          .then((res) => {
+            if (!res.valid) {
+              app.agentsModelKeyError = `API key for "${provider}" is missing or invalid`;
+            }
+          })
+          .catch(() => {});
+      }
+    }
   }
   if (host.tab === "nodes") {
     await loadNodes(host as unknown as OpenClawApp);
