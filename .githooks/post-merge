@@ -1,0 +1,54 @@
+#!/bin/sh
+# Post-merge hook: warns if upstream merge may have overwritten customizations.
+
+CUSTOM_FILES="
+src/gateway/server-methods-list.ts
+src/gateway/server-methods/agents.ts
+ui/src/ui/app-render.ts
+ui/src/ui/app-settings.ts
+ui/src/ui/app-view-state.ts
+ui/src/ui/app.ts
+ui/src/ui/views/agents-utils.ts
+ui/src/ui/views/agents.ts
+ui/src/ui/markdown.ts
+ui/src/ui/views/sessions.ts
+src/gateway/control-ui.ts
+"
+
+echo ""
+echo "========================================"
+echo "  POST-MERGE: Checking customizations"
+echo "========================================"
+
+MISSING=0
+for f in $CUSTOM_FILES; do
+  # Check if our custom marker exists in each file
+  case "$f" in
+    *agents-utils.ts)
+      grep -q "current" "$f" 2>/dev/null || { echo "WARNING: $f may have lost ← current label"; MISSING=1; }
+      ;;
+    *server-methods-list.ts)
+      grep -q "agents.auth.check" "$f" 2>/dev/null || { echo "WARNING: $f may have lost agents.auth.check"; MISSING=1; }
+      ;;
+    *server-methods/agents.ts)
+      grep -q "agents.auth.check" "$f" 2>/dev/null || { echo "WARNING: $f may have lost auth check handler"; MISSING=1; }
+      ;;
+    *app-settings.ts)
+      grep -q "agents.auth.check" "$f" 2>/dev/null || { echo "WARNING: $f may have lost Scenario 1 check"; MISSING=1; }
+      ;;
+    *agents.ts)
+      grep -q "modelKeyError" "$f" 2>/dev/null || { echo "WARNING: $f may have lost modelKeyError"; MISSING=1; }
+      ;;
+  esac
+done
+
+if [ "$MISSING" -eq 1 ]; then
+  echo ""
+  echo "CRITICAL: Some customizations may be missing after merge!"
+  echo "Review CUSTOMIZATIONS.md and re-apply changes if needed."
+  echo "Backup branch: git checkout -b backup/pre-merge-$(date +%Y%m%d)"
+else
+  echo "OK: All customization markers present."
+fi
+echo "========================================"
+echo ""
