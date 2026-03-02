@@ -387,7 +387,7 @@ export function buildModelOptions(
   return sorted.map((option) => {
     const isActive = option.value === current;
     return html`<option value=${option.value} style=${isActive ? "font-weight:bold" : ""}
-      >${isActive ? `◀ ${option.label} (current)` : option.label}</option
+      >${isActive ? `${option.label} <- current` : option.label}</option
     >`;
   });
 }
