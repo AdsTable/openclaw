@@ -213,7 +213,9 @@ export const agentsHandlers: GatewayRequestHandlers = {
   const cfg = loadConfig();
   try {
     const auth = await resolveApiKeyForProvider({ provider, cfg });
-    const valid = Boolean(auth.apiKey || auth.mode === "oauth" || auth.mode === "token" || auth.mode === "aws-sdk");
+    const valid = Boolean(
+      auth.apiKey || auth.mode === "oauth" || auth.mode === "token" || auth.mode === "aws-sdk",
+    );
     respond(true, { valid, provider }, undefined);
   } catch {
     respond(true, { valid: false, provider }, undefined);

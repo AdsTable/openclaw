@@ -36,16 +36,25 @@ if ($status) {
   exit 1
 }
 
-# Step 2: Save patch of our customizations BEFORE merge
+# Step 2: Save patch of our customizations BEFORE merge (format-patch = committable, am-compatible)
 $date = Get-Date -Format "yyyyMMdd-HHmm"
-$patchFile = "docs/patches/customizations-$date.patch"
-New-Item -ItemType Directory -Path "docs/patches" -Force | Out-Null
-git diff upstream/main origin/main -- @($CustomFiles) | Out-File $patchFile -Encoding UTF8
-Write-Host "Patch saved: $patchFile ($((Get-Item $patchFile).Length) bytes)" -ForegroundColor Green
+$patchDir = "docs/patches"
+New-Item -ItemType Directory -Path $patchDir -Force | Out-Null
+
+# format-patch: machine-readable patches reapplyable with git am
+$fmtPatch = "$patchDir/customizations-$date.fmtpatch"
+git format-patch upstream/main --stdout | Out-File $fmtPatch -Encoding UTF8
+Write-Host "Format-patch saved: $fmtPatch ($((Get-Item $fmtPatch).Length) bytes)" -ForegroundColor Green
+
+# diff patch: human-readable for review
+$diffPatch = "$patchDir/customizations-$date.diff"
+git diff upstream/main origin/main -- @($CustomFiles) | Out-File $diffPatch -Encoding UTF8
+Write-Host "Diff patch saved:   $diffPatch" -ForegroundColor Green
 
 if ($DryRun) {
-  Write-Host "`nDRY RUN complete. Patch saved for review. No branches created, no merge performed." -ForegroundColor Yellow
-  Write-Host "To apply patch after a future merge: git apply $patchFile" -ForegroundColor Yellow
+  Write-Host "`nDRY RUN complete. Patches saved, no branches created." -ForegroundColor Yellow
+  Write-Host "To reapply after upstream merge: git am $fmtPatch" -ForegroundColor Yellow
+  Write-Host "  OR (partial):                  git apply $diffPatch" -ForegroundColor Yellow
   exit 0
 }
 
@@ -76,8 +85,8 @@ if ($mergeExitCode -ne 0) {
     }
   }
   Write-Host "`nWARNING: Custom files restored from origin/main." -ForegroundColor Yellow
-  Write-Host "Review remaining conflicts: git diff --name-only --diff-filter=U" -ForegroundColor Yellow
-  Write-Host "To recover all custom changes: git apply $patchFile" -ForegroundColor Yellow
+  Write-Host "To recover ALL custom changes: git am $fmtPatch" -ForegroundColor Yellow
+  Write-Host "  (if am fails due to conflicts): git apply --3way $diffPatch" -ForegroundColor Yellow
   Write-Host "Then: git add . && git commit -m 'chore: merge upstream/main $date'" -ForegroundColor Yellow
 } else {
   Write-Host "Merge successful (no conflicts)." -ForegroundColor Green
