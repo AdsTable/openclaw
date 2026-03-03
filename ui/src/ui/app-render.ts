@@ -60,6 +60,7 @@ import { renderChat } from "./views/chat.ts";
 import { renderConfig } from "./views/config.ts";
 import { renderCron } from "./views/cron.ts";
 import { renderDebug } from "./views/debug.ts";
+import { renderApiKeyModal } from "./components/modal.ts";
 import { renderExecApprovalPrompt } from "./views/exec-approval.ts";
 import { renderGatewayUrlConfirmation } from "./views/gateway-url-confirmation.ts";
 import { renderInstances } from "./views/instances.ts";
@@ -349,6 +350,7 @@ export function renderApp(state: AppViewState) {
                 configLoading: state.configLoading,
                 configSaving: state.configSaving,
                 configDirty: state.configFormDirty,
+                modelKeyError: state.agentsModelKeyError ?? null,
                 channelsLoading: state.channelsLoading,
                 channelsError: state.channelsError,
                 channelsSnapshot: state.channelsSnapshot,
@@ -506,8 +508,36 @@ export function renderApp(state: AppViewState) {
                     removeConfigFormValue(state, [...basePath, "deny"]);
                   }
                 },
-                onConfigReload: () => loadConfig(state),
-                onConfigSave: () => saveConfig(state),
+                onConfigReload: () => {
+                  state.agentsModelKeyError = null;
+                  state.agentsModelKeyModalError = null;
+                  loadConfig(state);
+                },
+                onConfigSave: async () => {
+                  if (!state.client) {
+                    return;
+                  }
+                  state.agentsModelKeyError = null;
+                  state.agentsModelKeyModalError = null;
+                  const cfg = state.configForm as { agents?: { defaults?: { model?: unknown }; list?: Array<{ id?: string; model?: unknown }> } } | null;
+                  const agentEntry = cfg?.agents?.list?.find((e) => e?.id === resolvedAgentId);
+                  const rawModel = agentEntry?.model ?? cfg?.agents?.defaults?.model;
+                  const primary = typeof rawModel === "string" ? rawModel : (rawModel as { primary?: string } | null)?.primary ?? null;
+                  const provider = primary ? primary.split("/")[0] : null;
+                  if (provider) {
+                    try {
+                      const res = await state.client.request<{ valid: boolean; provider: string }>("agents.auth.check", { provider });
+                      if (!res.valid) {
+                        state.agentsModelKeyError = `API key for "${provider}" is missing or invalid`;
+                        return;
+                      }
+                    } catch {
+                      state.agentsModelKeyError = `Cannot verify API key for provider "${provider}"`;
+                      return;
+                    }
+                  }
+                  void saveConfig(state);
+                },
                 onChannelsRefresh: () => loadChannels(state, false),
                 onCronRefresh: () => state.loadCron(),
                 onSkillsFilterChange: (next) => (state.skillsFilter = next),
@@ -598,60 +628,70 @@ export function renderApp(state: AppViewState) {
                   if (!configValue) {
                     return;
                   }
-                  const list = (configValue as { agents?: { list?: unknown[] } }).agents?.list;
-                  if (!Array.isArray(list)) {
-                    return;
-                  }
-                  const index = list.findIndex(
-                    (entry) =>
-                      entry &&
-                      typeof entry === "object" &&
-                      "id" in entry &&
-                      (entry as { id?: string }).id === agentId,
-                  );
-                  if (index < 0) {
-                    return;
-                  }
-                  const basePath = ["agents", "list", index, "model"];
+                  const agentList = (configValue as { agents?: { list?: unknown[] } }).agents?.list;
+                  const agentIndex = Array.isArray(agentList)
+                    ? agentList.findIndex(
+                        (e) => e && typeof e === "object" && (e as { id?: string }).id === agentId,
+                      )
+                    : -1;
+                  const basePath =
+                    agentIndex >= 0
+                      ? ["agents", "list", agentIndex, "model"]
+                      : ["agents", "defaults", "model"];
                   if (!modelId) {
                     removeConfigFormValue(state, basePath);
-                    return;
-                  }
-                  const entry = list[index] as { model?: unknown };
-                  const existing = entry?.model;
-                  if (existing && typeof existing === "object" && !Array.isArray(existing)) {
-                    const fallbacks = (existing as { fallbacks?: unknown }).fallbacks;
-                    const next = {
-                      primary: modelId,
-                      ...(Array.isArray(fallbacks) ? { fallbacks } : {}),
-                    };
-                    updateConfigFormValue(state, basePath, next);
                   } else {
-                    updateConfigFormValue(state, basePath, modelId);
+                    const existing =
+                      agentIndex >= 0
+                        ? (agentList![agentIndex] as { model?: unknown })?.model
+                        : (configValue as { agents?: { defaults?: { model?: unknown } } }).agents
+                            ?.defaults?.model;
+                    if (existing && typeof existing === "object" && !Array.isArray(existing)) {
+                      const fallbacks = (existing as { fallbacks?: unknown }).fallbacks;
+                      updateConfigFormValue(state, basePath, {
+                        primary: modelId,
+                        ...(Array.isArray(fallbacks) ? { fallbacks } : {}),
+                      });
+                    } else {
+                      updateConfigFormValue(state, basePath, modelId);
+                    }
+                  }
+                  // Scenario 2: check key validity on model change
+                  const provider = modelId ? modelId.split("/")[0] : null;
+                  if (provider && state.client) {
+                    state.agentsModelKeyError = null;
+                    void state.client
+                      .request<{ valid: boolean; provider: string }>("agents.auth.check", {
+                        provider,
+                      })
+                      .then((res) => {
+                        if (!res.valid) {
+                          state.agentsModelKeyError = `API key for "${provider}" is missing or invalid`;
+                        }
+                      })
+                      .catch(() => {});
                   }
                 },
                 onModelFallbacksChange: (agentId, fallbacks) => {
                   if (!configValue) {
                     return;
                   }
-                  const list = (configValue as { agents?: { list?: unknown[] } }).agents?.list;
-                  if (!Array.isArray(list)) {
-                    return;
-                  }
-                  const index = list.findIndex(
-                    (entry) =>
-                      entry &&
-                      typeof entry === "object" &&
-                      "id" in entry &&
-                      (entry as { id?: string }).id === agentId,
-                  );
-                  if (index < 0) {
-                    return;
-                  }
-                  const basePath = ["agents", "list", index, "model"];
-                  const entry = list[index] as { model?: unknown };
+                  const agentList = (configValue as { agents?: { list?: unknown[] } }).agents?.list;
+                  const agentIndex = Array.isArray(agentList)
+                    ? agentList.findIndex(
+                        (e) => e && typeof e === "object" && (e as { id?: string }).id === agentId,
+                      )
+                    : -1;
+                  const basePath =
+                    agentIndex >= 0
+                      ? ["agents", "list", agentIndex, "model"]
+                      : ["agents", "defaults", "model"];
                   const normalized = fallbacks.map((name) => name.trim()).filter(Boolean);
-                  const existing = entry.model;
+                  const existing =
+                    agentIndex >= 0
+                      ? (agentList![agentIndex] as { model?: unknown })?.model
+                      : (configValue as { agents?: { defaults?: { model?: unknown } } }).agents
+                          ?.defaults?.model;
                   const resolvePrimary = () => {
                     if (typeof existing === "string") {
                       return existing.trim() || null;
@@ -946,6 +986,7 @@ export function renderApp(state: AppViewState) {
             : nothing
         }
       </main>
+      ${renderApiKeyModal(state)}
       ${renderExecApprovalPrompt(state)}
       ${renderGatewayUrlConfirmation(state)}
     </div>

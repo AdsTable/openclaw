@@ -1,0 +1,38 @@
+# Prevent accidental secret commits.
+# Used by gitleaks/trufflehog and similar secret scanning tools.
+
+title = "AdsTable OpenClaw Secret Scanning"
+
+[allowlist]
+  description = "Global allowlist"
+  paths = [
+    '''\.env\.example$''',
+    '''openclaw\.podman\.env$''',
+    '''e2e\.test\.ts$''',
+    '''\.test\.ts$''',
+    '''dev\.docs/patches/''',
+  ]
+
+[[rules]]
+  id = "generic-api-key"
+  description = "Detect generic API keys"
+  regex = '''(?i)(api[_-]?key|apikey|secret[_-]?key)\s*[:=]\s*['\"]?[a-zA-Z0-9_\-]{20,}'''
+  tags = ["key", "api"]
+
+[[rules]]
+  id = "bearer-token"
+  description = "Detect bearer tokens"
+  regex = '''(?i)bearer\s+[a-zA-Z0-9_\-\.]{20,}'''
+  tags = ["token"]
+
+[[rules]]
+  id = "telegram-bot-token"
+  description = "Detect Telegram bot tokens"
+  regex = '''\d{8,10}:[A-Za-z0-9_-]{35}'''
+  tags = ["telegram"]
+
+[[rules]]
+  id = "private-key"
+  description = "Detect private keys"
+  regex = '''-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----'''
+  tags = ["key", "private"]
