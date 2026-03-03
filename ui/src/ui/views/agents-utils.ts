@@ -368,6 +368,7 @@ function resolveConfiguredModels(
 export function buildModelOptions(
   configForm: Record<string, unknown> | null,
   current?: string | null,
+  invalidProviders?: Set<string>,
 ) {
   const options = resolveConfiguredModels(configForm);
   // If current model is not in configured list, prepend it as-is
@@ -386,8 +387,12 @@ export function buildModelOptions(
     : options;
   return sorted.map((option) => {
     const isActive = option.value === current;
+    const provider = option.value.split("/")[0];
+    const isInvalid = invalidProviders?.has(provider) ?? false;
+    const prefix = isInvalid ? "❌ " : "";
+    const suffix = isActive ? " ← current" : "";
     return html`<option value=${option.value} style=${isActive ? "font-weight:bold" : ""}
-      >${isActive ? `${option.label} ← current` : option.label}</option
+      >${`${prefix}${option.label}${suffix}`}</option
     >`;
   });
 }
