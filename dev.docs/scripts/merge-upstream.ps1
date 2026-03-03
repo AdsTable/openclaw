@@ -1,10 +1,10 @@
 # Safe upstream merge script for AdsTable/openclaw fork.
-# Run from repo root: pwsh scripts/merge-upstream.ps1
+# Run from repo root: pwsh dev.docs/scripts/merge-upstream.ps1
 
 param([switch]$DryRun)
 
 $ErrorActionPreference = "Stop"
-$RepoRoot = Split-Path $PSScriptRoot -Parent
+$RepoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 Set-Location $RepoRoot
 
 $CustomFiles = @(
@@ -38,7 +38,7 @@ if ($status) {
 
 # Step 2: Save patch of our customizations BEFORE merge (format-patch = committable, am-compatible)
 $date = Get-Date -Format "yyyyMMdd-HHmm"
-$patchDir = "docs/patches"
+$patchDir = "dev.docs/patches"
 New-Item -ItemType Directory -Path $patchDir -Force | Out-Null
 
 # format-patch: machine-readable patches reapplyable with git am

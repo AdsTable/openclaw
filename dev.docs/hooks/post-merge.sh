@@ -65,8 +65,8 @@ done
 if [ "$MISSING" -eq 1 ]; then
   echo ""
   echo "CRITICAL: Customizations lost! Re-apply from latest patch:"
-  echo "  git apply dev.docs/patches/\$(ls -t dev.docs/patches/ | head -1)"
-  echo "  OR review dev.docs/CUSTOMIZATIONS.md and re-apply manually."
+  echo "  git apply docs/patches/\$(ls -t docs/patches/ | head -1)"
+  echo "  OR review CUSTOMIZATIONS.md and re-apply manually."
 else
   echo "OK: All customization markers present."
 fi
