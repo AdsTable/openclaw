@@ -1,6 +1,10 @@
 node_modules
 **/node_modules/
 .env
+*.env
+# Security: never commit API keys or auth profiles
+auth-profiles.json
+**/auth-profiles.json
 docker-compose.extra.yml
 dist
 pnpm-lock.yaml
@@ -121,3 +125,4 @@ dist/protocol.schema.json
 
 # Synthing
 **/.stfolder/
+.vs/

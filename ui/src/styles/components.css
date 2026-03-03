@@ -2610,3 +2610,64 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* =========================================
+   API Key Warning Modal
+   ========================================= */
+
+.api-key-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 201;
+}
+
+.api-key-modal-card {
+  width: min(480px, 100%);
+  background: var(--card);
+  border: 1px solid var(--danger, #e53e3e);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  animation: scale-in 0.2s var(--ease-out);
+}
+
+.api-key-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.api-key-modal-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--danger, #e53e3e);
+}
+
+.api-key-modal-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1.1rem;
+  color: var(--text-muted);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.api-key-modal-close:hover { background: var(--bg-hover); }
+
+.api-key-modal-body { margin-bottom: 16px; line-height: 1.5; }
+
+.api-key-modal-hint {
+  margin-top: 8px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.api-key-modal-actions { display: flex; justify-content: flex-end; }

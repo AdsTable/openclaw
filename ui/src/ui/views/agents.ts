@@ -67,6 +67,7 @@ export type AgentsProps = {
   toolsCatalogError: string | null;
   toolsCatalogResult: ToolsCatalogResult | null;
   skillsFilter: string;
+  modelKeyError: string | null;
   onRefresh: () => void;
   onSelectAgent: (agentId: string) => void;
   onSelectPanel: (panel: AgentsPanel) => void;
@@ -180,6 +181,7 @@ export function renderAgents(props: AgentsProps) {
                         configLoading: props.configLoading,
                         configSaving: props.configSaving,
                         configDirty: props.configDirty,
+                        modelKeyError: props.modelKeyError,
                         onConfigReload: props.onConfigReload,
                         onConfigSave: props.onConfigSave,
                         onModelChange: props.onModelChange,
@@ -355,6 +357,7 @@ function renderAgentOverview(params: {
   configLoading: boolean;
   configSaving: boolean;
   configDirty: boolean;
+  modelKeyError: string | null;
   onConfigReload: () => void;
   onConfigSave: () => void;
   onModelChange: (agentId: string, modelId: string | null) => void;
@@ -370,6 +373,7 @@ function renderAgentOverview(params: {
     configLoading,
     configSaving,
     configDirty,
+    modelKeyError,
     onConfigReload,
     onConfigSave,
     onModelChange,
@@ -464,7 +468,7 @@ function renderAgentOverview(params: {
                       </option>
                     `
               }
-              ${buildModelOptions(configForm, effectivePrimary ?? undefined)}
+              ${buildModelOptions(configForm, effectivePrimary ?? undefined, modelKeyError ? new Set([modelKeyError.match(/"([^"]+)"/)?.[1]].filter((p): p is string => Boolean(p))) : undefined)}
             </select>
           </label>
           <label class="field" style="min-width: 260px; flex: 1;">
@@ -481,6 +485,7 @@ function renderAgentOverview(params: {
             />
           </label>
         </div>
+        ${modelKeyError ? html`<div class="callout danger" style="margin-top: 8px;">${modelKeyError}</div>` : nothing}
         <div class="row" style="justify-content: flex-end; gap: 8px;">
           <button class="btn btn--sm" ?disabled=${configLoading} @click=${onConfigReload}>
             Reload Config

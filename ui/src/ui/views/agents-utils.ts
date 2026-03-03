@@ -400,18 +400,33 @@ function resolveConfiguredModels(
 export function buildModelOptions(
   configForm: Record<string, unknown> | null,
   current?: string | null,
+  invalidProviders?: Set<string>,
 ) {
   const options = resolveConfiguredModels(configForm);
-  const hasCurrent = current ? options.some((option) => option.value === current) : false;
-  if (current && !hasCurrent) {
-    options.unshift({ value: current, label: `Current (${current})` });
+  // If current model is not in configured list, prepend it as-is
+  if (current && !options.some((o) => o.value === current)) {
+    options.unshift({ value: current, label: current });
   }
   if (options.length === 0) {
-    return html`
-      <option value="" disabled>No configured models</option>
-    `;
+    return html`<option value="" disabled>No configured models</option>`;
   }
-  return options.map((option) => html`<option value=${option.value}>${option.label}</option>`);
+  // Active model first, rest sorted alphabetically
+  const sorted = current
+    ? [
+        ...options.filter((o) => o.value === current),
+        ...options.filter((o) => o.value !== current).sort((a, b) => a.label.localeCompare(b.label)),
+      ]
+    : options;
+  return sorted.map((option) => {
+    const isActive = option.value === current;
+    const provider = option.value.split("/")[0];
+    const isInvalid = invalidProviders?.has(provider) ?? false;
+    const prefix = isInvalid ? "❌ " : "";
+    const suffix = isActive ? " ← current" : "";
+    return html`<option value=${option.value} style=${isActive ? "font-weight:bold" : ""}
+      >${`${prefix}${option.label}${suffix}`}</option
+    >`;
+  });
 }
 
 type CompiledPattern =

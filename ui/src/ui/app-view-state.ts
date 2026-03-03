@@ -132,6 +132,8 @@ export type AppViewState = {
   toolsCatalogError: string | null;
   toolsCatalogResult: ToolsCatalogResult | null;
   agentsPanel: "overview" | "files" | "tools" | "skills" | "channels" | "cron";
+  agentsModelKeyError: string | null;
+  agentsModelKeyModalError: string | null;
   agentFilesLoading: boolean;
   agentFilesError: string | null;
   agentFilesList: AgentsFilesListResult | null;

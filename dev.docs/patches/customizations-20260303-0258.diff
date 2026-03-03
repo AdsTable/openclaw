@@ -1,0 +1,3144 @@
+diff --git a/.gitignore b/.gitignore
+index b5d3257e7..d33072663 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,6 +1,10 @@
+ node_modules
+ **/node_modules/
+ .env
++*.env
++# Security: never commit API keys or auth profiles
++auth-profiles.json
++**/auth-profiles.json
+ docker-compose.extra.yml
+ dist
+ pnpm-lock.yaml
+@@ -17,11 +21,6 @@ __pycache__/
+ ui/src/ui/__screenshots__/
+ ui/playwright-report/
+ ui/test-results/
+-packages/dashboard-next/.next/
+-packages/dashboard-next/out/
+-
+-# Mise configuration files
+-mise.toml
+ 
+ # Android build artifacts
+ apps/android/.gradle/
+@@ -94,29 +93,7 @@ USER.md
+ !.agent/workflows/
+ /local/
+ package-lock.json
+-.claude/settings.local.json
+-.agents/
+-.agents
+-.agent/
+-skills-lock.json
+ 
+ # Local iOS signing overrides
+ apps/ios/LocalSigning.xcconfig
+-
+-# Xcode build directories (xcodebuild output)
+-apps/ios/build/
+-apps/shared/OpenClawKit/build/
+-Swabble/build/
+-
+-# Generated protocol schema (produced via pnpm protocol:gen)
+-dist/protocol.schema.json
+-.ant-colony/
+-
+-# Eclipse
+-**/.project
+-**/.classpath
+-**/.settings/
+-**/.gradle/
+-
+-# Synthing
+-**/.stfolder/
++.vs/
+diff --git a/src/gateway/control-ui.ts b/src/gateway/control-ui.ts
+index fc1ad4633..74e98b734 100644
+--- a/src/gateway/control-ui.ts
++++ b/src/gateway/control-ui.ts
+@@ -1,25 +1,15 @@
+ import fs from "node:fs";
++import os from "node:os";
+ import type { IncomingMessage, ServerResponse } from "node:http";
+ import path from "node:path";
+ import type { OpenClawConfig } from "../config/config.js";
+-import { openBoundaryFileSync } from "../infra/boundary-file-read.js";
+ import { resolveControlUiRootSync } from "../infra/control-ui-assets.js";
+-import { isWithinDir } from "../infra/path-safety.js";
+-import { openVerifiedFileSync } from "../infra/safe-open-sync.js";
+-import { AVATAR_MAX_BYTES } from "../shared/avatar-policy.js";
+ import { DEFAULT_ASSISTANT_IDENTITY, resolveAssistantIdentity } from "./assistant-identity.js";
+ import {
+   CONTROL_UI_BOOTSTRAP_CONFIG_PATH,
+   type ControlUiBootstrapConfig,
+ } from "./control-ui-contract.js";
+ import { buildControlUiCspHeader } from "./control-ui-csp.js";
+-import {
+-  isReadHttpMethod,
+-  respondMethodNotAllowed,
+-  respondNotFound as respondControlUiNotFound,
+-  respondPlainText,
+-} from "./control-ui-http-utils.js";
+-import { classifyControlUiRequest } from "./control-ui-routing.js";
+ import {
+   buildControlUiAvatarUrl,
+   CONTROL_UI_AVATAR_PREFIX,
+@@ -72,28 +62,6 @@ function contentTypeForExt(ext: string): string {
+   }
+ }
+ 
+-/**
+- * Extensions recognised as static assets.  Missing files with these extensions
+- * return 404 instead of the SPA index.html fallback.  `.html` is intentionally
+- * excluded — actual HTML files on disk are served earlier, and missing `.html`
+- * paths should fall through to the SPA router (client-side routers may use
+- * `.html`-suffixed routes).
+- */
+-const STATIC_ASSET_EXTENSIONS = new Set([
+-  ".js",
+-  ".css",
+-  ".json",
+-  ".map",
+-  ".svg",
+-  ".png",
+-  ".jpg",
+-  ".jpeg",
+-  ".gif",
+-  ".webp",
+-  ".ico",
+-  ".txt",
+-]);
+-
+ export type ControlUiAvatarResolution =
+   | { kind: "none"; reason: string }
+   | { kind: "local"; filePath: string }
+@@ -131,7 +99,7 @@ export function handleControlUiAvatarRequest(
+   if (!urlRaw) {
+     return false;
+   }
+-  if (!isReadHttpMethod(req.method)) {
++  if (req.method !== "GET" && req.method !== "HEAD") {
+     return false;
+   }
+ 
+@@ -150,7 +118,7 @@ export function handleControlUiAvatarRequest(
+   const agentIdParts = pathname.slice(pathWithBase.length).split("/").filter(Boolean);
+   const agentId = agentIdParts[0] ?? "";
+   if (agentIdParts.length !== 1 || !agentId || !isValidAgentId(agentId)) {
+-    respondControlUiNotFound(res);
++    respondNotFound(res);
+     return true;
+   }
+ 
+@@ -168,86 +136,125 @@ export function handleControlUiAvatarRequest(
+ 
+   const resolved = opts.resolveAvatar(agentId);
+   if (resolved.kind !== "local") {
+-    respondControlUiNotFound(res);
++    respondNotFound(res);
+     return true;
+   }
+ 
+-  const safeAvatar = resolveSafeAvatarFile(resolved.filePath);
+-  if (!safeAvatar) {
+-    respondControlUiNotFound(res);
++  if (req.method === "HEAD") {
++    res.statusCode = 200;
++    res.setHeader("Content-Type", contentTypeForExt(path.extname(resolved.filePath).toLowerCase()));
++    res.setHeader("Cache-Control", "no-cache");
++    res.end();
+     return true;
+   }
+-  try {
+-    if (req.method === "HEAD") {
+-      res.statusCode = 200;
+-      res.setHeader("Content-Type", contentTypeForExt(path.extname(safeAvatar.path).toLowerCase()));
+-      res.setHeader("Cache-Control", "no-cache");
+-      res.end();
+-      return true;
+-    }
+ 
+-    serveResolvedFile(res, safeAvatar.path, fs.readFileSync(safeAvatar.fd));
++  serveFile(res, resolved.filePath);
++  return true;
++}
++
++const SESSION_VIEWER_JS = `
++function b64toStr(b64){const bin=atob(b64);const bytes=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);return new TextDecoder('utf-8').decode(bytes);}
++function sessionLabel(name){if(name.includes('.reset.'))return'[reset] ';if(name.includes('.deleted.'))return'[deleted] ';return'';}
++function parseSession(name,b64){const text=b64toStr(b64);const lines=text.split('\\n').filter(l=>l.trim());const messages=[];let firstTs=null;for(const line of lines){try{const e=JSON.parse(line);if(!firstTs&&e.timestamp)firstTs=e.timestamp;if(e.type!=='message')continue;const msg=e.message||{};const role=msg.role;if(role!=='user'&&role!=='assistant')continue;let content='';if(typeof msg.content==='string')content=msg.content;else if(Array.isArray(msg.content)){content=msg.content.filter(c=>c.type==='text').map(c=>c.text||'').join('\\n');}content=content.replace(/Conversation info[\\s\\S]*?\`\`\`\\s*\\n?/g,'');content=content.replace(/\\[\\[reply_to_current\\]\\]\\s*/g,'');const m=content.match(/\\[(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[^\\]]+\\]\\s+([\\s\\S]+)/);if(m)content=m[1].trim();content=content.trim();if(!content)continue;messages.push({role,content,timestamp:e.timestamp,model:e.model||(msg.model||'')});}catch(ex){}}const date=firstTs?new Date(firstTs).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}):name.substring(0,19);const label=sessionLabel(name);return{name,date,label,messages};}
++let cur=-1;
++function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
++function fmt(s){let h=esc(s);h=h.replace(/\`\`\`[\\w]*\\n([\\s\\S]*?)\`\`\`/g,function(_,c){return'<pre><code>'+c.trimEnd()+'</code></pre>';});h=h.replace(/\`([^\`\\n]+)\`/g,'<code>$1</code>');h=h.replace(/\\*\\*([^*\\n]+)\\*\\*/g,'<strong>$1</strong>');return h;}
++function fmtTime(t){try{return new Date(t).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});}catch(e){return '';}}
++function renderList(){const list=document.getElementById('list');list.innerHTML=SESSIONS.map(function(s,i){const badge=s.label?'<span style="font-size:10px;color:#cf222e;font-weight:600">'+s.label+'</span>':'';return'<div class="s-item'+(i===cur?' active':'')+'" data-idx="'+i+'">'+'<div class="s-date">'+badge+s.date+'</div>'+'<div class="s-meta">'+s.messages.length+' \\u0441\\u043e\\u043e\\u0431\\u0449\\u0435\\u043d\\u0438\\u0439</div></div>';}).join('');list.querySelectorAll('.s-item').forEach(function(el){el.addEventListener('click',function(){selectSession(parseInt(el.getAttribute('data-idx'),10));});});}
++function selectSession(i){cur=i;renderList();const s=SESSIONS[i];document.getElementById('top').innerHTML='<strong>'+s.date+'</strong>'+(s.label?' <span style="color:#cf222e;font-size:11px">'+s.label.trim()+'</span>':'')+' &nbsp;&middot;&nbsp; '+esc(s.name.substring(0,36))+'...';const box=document.getElementById('msgs');box.className='msgs';if(!s.messages.length){box.innerHTML='<div style="margin:auto;text-align:center;color:#8c959f;padding:40px">\\u041d\\u0435\\u0442 \\u0441\\u043e\\u043e\\u0431\\u0449\\u0435\\u043d\\u0438\\u0439</div>';document.getElementById('footer').style.display='none';return;}box.innerHTML=s.messages.map(function(m){const t=fmtTime(m.timestamp);const mod=m.model?m.model.split('/').pop():'';const who=m.role==='user'?'\\u0412\\u044b':'Agent';const meta=who+(mod?' \\u00b7 '+mod:'')+(t?' \\u00b7 '+t:'');const av=m.role==='user'?'&#128100;':'&#129422;';return'<div class="msg '+m.role+'"><div class="av '+m.role+'">'+av+'</div><div class="bub"><div class="meta">'+meta+'</div><div class="txt">'+fmt(m.content)+'</div></div></div>';}).join('');const rev=s.messages.slice().reverse();const lm=rev.find(function(m){return m.role==='assistant'&&m.model;});document.getElementById('fC').textContent=s.messages.length;document.getElementById('fM').textContent=lm?lm.model.split('/').pop():'\\u2014';document.getElementById('footer').style.display='flex';box.scrollTop=box.scrollHeight;}
++`;
++
++function buildSessionViewerHtml(basePath: string): string {
++  const css = `*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f6f8fa;color:#24292f;display:flex;height:100vh;overflow:hidden}.sidebar{width:260px;min-width:260px;background:#fff;border-right:1px solid #d0d7de;display:flex;flex-direction:column}.sidebar h2{padding:12px 16px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:#57606a;border-bottom:1px solid #d0d7de;background:#f6f8fa}.s-list{overflow-y:auto;flex:1}.s-item{padding:11px 16px;border-bottom:1px solid #eaeef2;cursor:pointer;transition:background .1s}.s-item:hover{background:#f6f8fa}.s-item.active{background:#dbeafe;border-left:3px solid #2563eb}.s-date{font-size:13px;font-weight:600;color:#24292f;margin-bottom:2px}.s-meta{font-size:11px;color:#57606a}.chat{flex:1;display:flex;flex-direction:column;overflow:hidden}.chat-top{padding:10px 20px;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-size:12px;color:#57606a}.chat-top strong{color:#24292f}.msgs{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:14px}.msg{display:flex;gap:10px}.msg.user{flex-direction:row-reverse}.av{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0;align-self:flex-start;margin-top:16px;background:#e8f4fd}.av.user{background:#fde8f4}.bub{max-width:calc(100% - 48px)}.meta{font-size:11px;color:#8c959f;margin-bottom:4px}.msg.user .meta{text-align:right}.txt{background:#f6f8fa;border:1px solid #d0d7de;border-radius:10px;padding:10px 14px;font-size:13.5px;line-height:1.65;white-space:pre-wrap;word-break:break-word;color:#24292f}.msg.user .txt{background:#eff6ff;border-color:#bfdbfe;color:#1e3a5f}.txt code{background:#e8edf2;padding:1px 5px;border-radius:3px;font-family:Consolas,monospace;font-size:12px;color:#0550ae}.txt pre{background:#f0f3f6;border:1px solid #d0d7de;border-radius:6px;padding:10px;margin:6px 0;overflow-x:auto}.txt pre code{background:none;padding:0;color:#24292f}.txt strong{font-weight:600}.footer{padding:8px 20px;background:#f6f8fa;border-top:1px solid #d0d7de;font-size:12px;color:#57606a;display:flex;gap:20px}.footer span{color:#24292f;font-weight:600}.empty{flex:1;display:flex;align-items:center;justify-content:center;color:#8c959f;font-size:14px}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#d0d7de;border-radius:3px}`;
++
++  const historyJsUrl = basePath ? `${basePath}/history.js` : "/history.js";
++  const html = [
++    "<!DOCTYPE html><html lang=\"ru\"><head>",
++    "<meta charset=\"UTF-8\">",
++    "<title>OpenClaw History</title>",
++    `<style>${css}</style>`,
++    "</head><body>",
++    "<div class=\"sidebar\"><h2>&#129422; OpenClaw History</h2><div class=\"s-list\" id=\"list\"></div></div>",
++    "<div class=\"chat\">",
++    "<div class=\"chat-top\" id=\"top\">&#8592; &#1042;&#1099;&#1073;&#1077;&#1088;&#1080;&#1090;&#1077; &#1089;&#1077;&#1089;&#1089;&#1080;&#1102;</div>",
++    "<div class=\"msgs empty\" id=\"msgs\">&#1047;&#1072;&#1075;&#1088;&#1091;&#1079;&#1082;&#1072;...</div>",
++    "<div class=\"footer\" id=\"footer\" style=\"display:none\">&#1057;&#1086;&#1086;&#1073;&#1097;&#1077;&#1085;&#1080;&#1081;: <span id=\"fC\"></span> &nbsp; &#1052;&#1086;&#1076;&#1077;&#1083;&#1100;: <span id=\"fM\"></span></div>",
++    "</div>",
++    `<script src="${historyJsUrl}"></script>`,
++    "</body></html>",
++  ].join("");
++  return html;
++}
++
++function handleSessionHistoryRoute(
++  req: IncomingMessage,
++  res: ServerResponse,
++  pathname: string,
++  basePath: string,
++): boolean {
++  const historyPath = basePath ? `${basePath}/history` : "/history";
++  const historyJsPath = basePath ? `${basePath}/history.js` : "/history.js";
++
++  if (pathname === historyJsPath) {
++    const sessionsDir = path.join(os.homedir(), ".openclaw", "agents", "main", "sessions");
++    const files: { name: string; b64: string }[] = [];
++    if (fs.existsSync(sessionsDir)) {
++      const jsonlFiles = fs.readdirSync(sessionsDir)
++        .filter((f) => f.includes(".jsonl") && !f.endsWith(".lock"))
++        .map((f) => ({ name: f, mtime: fs.statSync(path.join(sessionsDir, f)).mtimeMs }))
++        .sort((a, b) => b.mtime - a.mtime);
++      for (const { name } of jsonlFiles) {
++        const filePath = path.join(sessionsDir, name);
++        const bytes = fs.readFileSync(filePath);
++        files.push({ name, b64: bytes.toString("base64") });
++      }
++    }
++    const rawJson = JSON.stringify(files);
++    const js = [
++      SESSION_VIEWER_JS,
++      `var RAW=${rawJson};`,
++      "var SESSIONS=RAW.map(function(f){return parseSession(f.name,f.b64);});",
++      "renderList();if(SESSIONS.length>0)selectSession(0);",
++    ].join("\n");
++    res.statusCode = 200;
++    res.setHeader("Content-Type", "application/javascript; charset=utf-8");
++    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
++    res.end(js, "utf8");
+     return true;
+-  } finally {
+-    fs.closeSync(safeAvatar.fd);
+   }
++
++  if (pathname !== historyPath && pathname !== `${historyPath}/`) {
++    return false;
++  }
++
++  const html = buildSessionViewerHtml(basePath);
++  res.statusCode = 200;
++  res.setHeader("Content-Type", "text/html; charset=utf-8");
++  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
++  res.setHeader("Pragma", "no-cache");
++  res.end(html, "utf8");
++  return true;
+ }
+ 
+-function setStaticFileHeaders(res: ServerResponse, filePath: string) {
++function respondNotFound(res: ServerResponse) {
++  res.statusCode = 404;
++  res.setHeader("Content-Type", "text/plain; charset=utf-8");
++  res.end("Not Found");
++}
++
++function serveFile(res: ServerResponse, filePath: string) {
+   const ext = path.extname(filePath).toLowerCase();
+   res.setHeader("Content-Type", contentTypeForExt(ext));
+   // Static UI should never be cached aggressively while iterating; allow the
+   // browser to revalidate.
+   res.setHeader("Cache-Control", "no-cache");
++  res.end(fs.readFileSync(filePath));
+ }
+ 
+-function serveResolvedFile(res: ServerResponse, filePath: string, body: Buffer) {
+-  setStaticFileHeaders(res, filePath);
+-  res.end(body);
+-}
+-
+-function serveResolvedIndexHtml(res: ServerResponse, body: string) {
++function serveIndexHtml(res: ServerResponse, indexPath: string) {
+   res.setHeader("Content-Type", "text/html; charset=utf-8");
+   res.setHeader("Cache-Control", "no-cache");
+-  res.end(body);
+-}
+-
+-function isExpectedSafePathError(error: unknown): boolean {
+-  const code =
+-    typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
+-  return code === "ENOENT" || code === "ENOTDIR" || code === "ELOOP";
+-}
+-
+-function resolveSafeAvatarFile(filePath: string): { path: string; fd: number } | null {
+-  const opened = openVerifiedFileSync({
+-    filePath,
+-    rejectPathSymlink: true,
+-    maxBytes: AVATAR_MAX_BYTES,
+-  });
+-  if (!opened.ok) {
+-    return null;
+-  }
+-  return { path: opened.path, fd: opened.fd };
+-}
+-
+-function resolveSafeControlUiFile(
+-  rootReal: string,
+-  filePath: string,
+-): { path: string; fd: number } | null {
+-  const opened = openBoundaryFileSync({
+-    absolutePath: filePath,
+-    rootPath: rootReal,
+-    rootRealPath: rootReal,
+-    boundaryLabel: "control ui root",
+-    skipLexicalRootCheck: true,
+-  });
+-  if (!opened.ok) {
+-    if (opened.reason === "io") {
+-      throw opened.error;
+-    }
+-    return null;
+-  }
+-  return { path: opened.path, fd: opened.fd };
++  res.end(fs.readFileSync(indexPath, "utf8"));
+ }
+ 
+ function isSafeRelativePath(relPath: string) {
+@@ -255,9 +262,6 @@ function isSafeRelativePath(relPath: string) {
+     return false;
+   }
+   const normalized = path.posix.normalize(relPath);
+-  if (path.posix.isAbsolute(normalized) || path.win32.isAbsolute(normalized)) {
+-    return false;
+-  }
+   if (normalized.startsWith("../") || normalized === "..") {
+     return false;
+   }
+@@ -276,37 +280,45 @@ export function handleControlUiHttpRequest(
+   if (!urlRaw) {
+     return false;
+   }
++  if (req.method !== "GET" && req.method !== "HEAD") {
++    res.statusCode = 405;
++    res.setHeader("Content-Type", "text/plain; charset=utf-8");
++    res.end("Method Not Allowed");
++    return true;
++  }
++
+   const url = new URL(urlRaw, "http://localhost");
+   const basePath = normalizeControlUiBasePath(opts?.basePath);
+   const pathname = url.pathname;
+-  const route = classifyControlUiRequest({
+-    basePath,
+-    pathname,
+-    search: url.search,
+-    method: req.method,
+-  });
+-  if (route.kind === "not-control-ui") {
+-    return false;
+-  }
+-  if (route.kind === "not-found") {
+-    applyControlUiSecurityHeaders(res);
+-    respondControlUiNotFound(res);
+-    return true;
+-  }
+-  if (route.kind === "method-not-allowed") {
+-    respondMethodNotAllowed(res);
+-    return true;
++
++  if (!basePath) {
++    if (pathname === "/ui" || pathname.startsWith("/ui/")) {
++      applyControlUiSecurityHeaders(res);
++      respondNotFound(res);
++      return true;
++    }
+   }
+-  if (route.kind === "redirect") {
+-    applyControlUiSecurityHeaders(res);
+-    res.statusCode = 302;
+-    res.setHeader("Location", route.location);
+-    res.end();
+-    return true;
++
++  if (basePath) {
++    if (pathname === basePath) {
++      applyControlUiSecurityHeaders(res);
++      res.statusCode = 302;
++      res.setHeader("Location", `${basePath}/${url.search}`);
++      res.end();
++      return true;
++    }
++    if (!pathname.startsWith(`${basePath}/`)) {
++      return false;
++    }
+   }
+ 
+   applyControlUiSecurityHeaders(res);
+ 
++  // Session history viewer — served dynamically from .jsonl files
++  if (handleSessionHistoryRoute(req, res, pathname, basePath)) {
++    return true;
++  }
++
+   const bootstrapConfigPath = basePath
+     ? `${basePath}${CONTROL_UI_BOOTSTRAP_CONFIG_PATH}`
+     : CONTROL_UI_BOOTSTRAP_CONFIG_PATH;
+@@ -338,17 +350,17 @@ export function handleControlUiHttpRequest(
+ 
+   const rootState = opts?.root;
+   if (rootState?.kind === "invalid") {
+-    respondPlainText(
+-      res,
+-      503,
++    res.statusCode = 503;
++    res.setHeader("Content-Type", "text/plain; charset=utf-8");
++    res.end(
+       `Control UI assets not found at ${rootState.path}. Build them with \`pnpm ui:build\` (auto-installs UI deps), or update gateway.controlUi.root.`,
+     );
+     return true;
+   }
+   if (rootState?.kind === "missing") {
+-    respondPlainText(
+-      res,
+-      503,
++    res.statusCode = 503;
++    res.setHeader("Content-Type", "text/plain; charset=utf-8");
++    res.end(
+       "Control UI assets not found. Build them with `pnpm ui:build` (auto-installs UI deps), or run `pnpm ui:dev` during development.",
+     );
+     return true;
+@@ -363,28 +375,9 @@ export function handleControlUiHttpRequest(
+           cwd: process.cwd(),
+         });
+   if (!root) {
+-    respondPlainText(
+-      res,
+-      503,
+-      "Control UI assets not found. Build them with `pnpm ui:build` (auto-installs UI deps), or run `pnpm ui:dev` during development.",
+-    );
+-    return true;
+-  }
+-
+-  const rootReal = (() => {
+-    try {
+-      return fs.realpathSync(root);
+-    } catch (error) {
+-      if (isExpectedSafePathError(error)) {
+-        return null;
+-      }
+-      throw error;
+-    }
+-  })();
+-  if (!rootReal) {
+-    respondPlainText(
+-      res,
+-      503,
++    res.statusCode = 503;
++    res.setHeader("Content-Type", "text/plain; charset=utf-8");
++    res.end(
+       "Control UI assets not found. Build them with `pnpm ui:build` (auto-installs UI deps), or run `pnpm ui:dev` during development.",
+     );
+     return true;
+@@ -405,64 +398,32 @@ export function handleControlUiHttpRequest(
+   const requested = rel && !rel.endsWith("/") ? rel : `${rel}index.html`;
+   const fileRel = requested || "index.html";
+   if (!isSafeRelativePath(fileRel)) {
+-    respondControlUiNotFound(res);
++    respondNotFound(res);
+     return true;
+   }
+ 
+-  const filePath = path.resolve(root, fileRel);
+-  if (!isWithinDir(root, filePath)) {
+-    respondControlUiNotFound(res);
++  const filePath = path.join(root, fileRel);
++  if (!filePath.startsWith(root)) {
++    respondNotFound(res);
+     return true;
+   }
+ 
+-  const safeFile = resolveSafeControlUiFile(rootReal, filePath);
+-  if (safeFile) {
+-    try {
+-      if (req.method === "HEAD") {
+-        res.statusCode = 200;
+-        setStaticFileHeaders(res, safeFile.path);
+-        res.end();
+-        return true;
+-      }
+-      if (path.basename(safeFile.path) === "index.html") {
+-        serveResolvedIndexHtml(res, fs.readFileSync(safeFile.fd, "utf8"));
+-        return true;
+-      }
+-      serveResolvedFile(res, safeFile.path, fs.readFileSync(safeFile.fd));
++  if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
++    if (path.basename(filePath) === "index.html") {
++      serveIndexHtml(res, filePath);
+       return true;
+-    } finally {
+-      fs.closeSync(safeFile.fd);
+     }
+-  }
+-
+-  // If the requested path looks like a static asset (known extension), return
+-  // 404 rather than falling through to the SPA index.html fallback.  We check
+-  // against the same set of extensions that contentTypeForExt() recognises so
+-  // that dotted SPA routes (e.g. /user/jane.doe, /v2.0) still get the
+-  // client-side router fallback.
+-  if (STATIC_ASSET_EXTENSIONS.has(path.extname(fileRel).toLowerCase())) {
+-    respondControlUiNotFound(res);
++    serveFile(res, filePath);
+     return true;
+   }
+ 
+   // SPA fallback (client-side router): serve index.html for unknown paths.
+   const indexPath = path.join(root, "index.html");
+-  const safeIndex = resolveSafeControlUiFile(rootReal, indexPath);
+-  if (safeIndex) {
+-    try {
+-      if (req.method === "HEAD") {
+-        res.statusCode = 200;
+-        setStaticFileHeaders(res, safeIndex.path);
+-        res.end();
+-        return true;
+-      }
+-      serveResolvedIndexHtml(res, fs.readFileSync(safeIndex.fd, "utf8"));
+-      return true;
+-    } finally {
+-      fs.closeSync(safeIndex.fd);
+-    }
++  if (fs.existsSync(indexPath)) {
++    serveIndexHtml(res, indexPath);
++    return true;
+   }
+ 
+-  respondControlUiNotFound(res);
++  respondNotFound(res);
+   return true;
+ }
+diff --git a/src/gateway/server-methods-list.ts b/src/gateway/server-methods-list.ts
+index 3c8281c98..03fb116fd 100644
+--- a/src/gateway/server-methods-list.ts
++++ b/src/gateway/server-methods-list.ts
+@@ -1,9 +1,7 @@
+ import { listChannelPlugins } from "../channels/plugins/index.js";
+-import { GATEWAY_EVENT_UPDATE_AVAILABLE } from "./events.js";
+ 
+ const BASE_METHODS = [
+   "health",
+-  "doctor.memory.status",
+   "logs.tail",
+   "channels.status",
+   "channels.logout",
+@@ -35,8 +33,8 @@ const BASE_METHODS = [
+   "talk.config",
+   "talk.mode",
+   "models.list",
+-  "tools.catalog",
+   "agents.list",
++  "agents.auth.check",
+   "agents.create",
+   "agents.update",
+   "agents.delete",
+@@ -50,7 +48,6 @@ const BASE_METHODS = [
+   "update.run",
+   "voicewake.get",
+   "voicewake.set",
+-  "secrets.reload",
+   "sessions.list",
+   "sessions.preview",
+   "sessions.patch",
+@@ -77,7 +74,6 @@ const BASE_METHODS = [
+   "node.invoke",
+   "node.invoke.result",
+   "node.event",
+-  "node.canvas.capability.refresh",
+   "cron.list",
+   "cron.status",
+   "cron.add",
+@@ -122,5 +118,4 @@ export const GATEWAY_EVENTS = [
+   "voicewake.changed",
+   "exec.approval.requested",
+   "exec.approval.resolved",
+-  GATEWAY_EVENT_UPDATE_AVAILABLE,
+ ];
+diff --git a/src/gateway/server-methods/agents.ts b/src/gateway/server-methods/agents.ts
+index 61d8be8a8..3e9ca976a 100644
+--- a/src/gateway/server-methods/agents.ts
++++ b/src/gateway/server-methods/agents.ts
+@@ -25,12 +25,9 @@ import {
+   listAgentEntries,
+   pruneAgentConfig,
+ } from "../../commands/agents.config.js";
++import { resolveApiKeyForProvider } from "../../agents/model-auth.js";
+ import { loadConfig, writeConfigFile } from "../../config/config.js";
+ import { resolveSessionTranscriptsDirForAgent } from "../../config/sessions/paths.js";
+-import { sameFileIdentity } from "../../infra/file-identity.js";
+-import { SafeOpenError, readLocalFileSafely, writeFileWithinRoot } from "../../infra/fs-safe.js";
+-import { assertNoPathAliasEscape } from "../../infra/path-alias-guards.js";
+-import { isNotFoundPathError } from "../../infra/path-guards.js";
+ import { DEFAULT_AGENT_ID, normalizeAgentId } from "../../routing/session-key.js";
+ import { resolveUserPath } from "../../utils.js";
+ import {
+@@ -101,124 +98,10 @@ type FileMeta = {
+   updatedAtMs: number;
+ };
+ 
+-type ResolvedAgentWorkspaceFilePath =
+-  | {
+-      kind: "ready";
+-      requestPath: string;
+-      ioPath: string;
+-      workspaceReal: string;
+-    }
+-  | {
+-      kind: "missing";
+-      requestPath: string;
+-      ioPath: string;
+-      workspaceReal: string;
+-    }
+-  | {
+-      kind: "invalid";
+-      requestPath: string;
+-      reason: string;
+-    };
+-
+-async function resolveWorkspaceRealPath(workspaceDir: string): Promise<string> {
++async function statFile(filePath: string): Promise<FileMeta | null> {
+   try {
+-    return await fs.realpath(workspaceDir);
+-  } catch {
+-    return path.resolve(workspaceDir);
+-  }
+-}
+-
+-async function resolveAgentWorkspaceFilePath(params: {
+-  workspaceDir: string;
+-  name: string;
+-  allowMissing: boolean;
+-}): Promise<ResolvedAgentWorkspaceFilePath> {
+-  const requestPath = path.join(params.workspaceDir, params.name);
+-  const workspaceReal = await resolveWorkspaceRealPath(params.workspaceDir);
+-  const candidatePath = path.resolve(workspaceReal, params.name);
+-
+-  try {
+-    await assertNoPathAliasEscape({
+-      absolutePath: candidatePath,
+-      rootPath: workspaceReal,
+-      boundaryLabel: "workspace root",
+-    });
+-  } catch (error) {
+-    return {
+-      kind: "invalid",
+-      requestPath,
+-      reason: error instanceof Error ? error.message : "path escapes workspace root",
+-    };
+-  }
+-
+-  let candidateLstat: Awaited<ReturnType<typeof fs.lstat>>;
+-  try {
+-    candidateLstat = await fs.lstat(candidatePath);
+-  } catch (err) {
+-    if (isNotFoundPathError(err)) {
+-      if (params.allowMissing) {
+-        return { kind: "missing", requestPath, ioPath: candidatePath, workspaceReal };
+-      }
+-      return { kind: "invalid", requestPath, reason: "file not found" };
+-    }
+-    throw err;
+-  }
+-
+-  if (candidateLstat.isSymbolicLink()) {
+-    let targetReal: string;
+-    try {
+-      targetReal = await fs.realpath(candidatePath);
+-    } catch (err) {
+-      if (isNotFoundPathError(err)) {
+-        if (params.allowMissing) {
+-          return { kind: "missing", requestPath, ioPath: candidatePath, workspaceReal };
+-        }
+-        return { kind: "invalid", requestPath, reason: "file not found" };
+-      }
+-      throw err;
+-    }
+-    let targetStat: Awaited<ReturnType<typeof fs.stat>>;
+-    try {
+-      targetStat = await fs.stat(targetReal);
+-    } catch (err) {
+-      if (isNotFoundPathError(err)) {
+-        if (params.allowMissing) {
+-          return { kind: "missing", requestPath, ioPath: targetReal, workspaceReal };
+-        }
+-        return { kind: "invalid", requestPath, reason: "file not found" };
+-      }
+-      throw err;
+-    }
+-    if (!targetStat.isFile()) {
+-      return { kind: "invalid", requestPath, reason: "path is not a regular file" };
+-    }
+-    if (targetStat.nlink > 1) {
+-      return { kind: "invalid", requestPath, reason: "hardlinked file path not allowed" };
+-    }
+-    return { kind: "ready", requestPath, ioPath: targetReal, workspaceReal };
+-  }
+-
+-  if (!candidateLstat.isFile()) {
+-    return { kind: "invalid", requestPath, reason: "path is not a regular file" };
+-  }
+-  if (candidateLstat.nlink > 1) {
+-    return { kind: "invalid", requestPath, reason: "hardlinked file path not allowed" };
+-  }
+-
+-  const targetReal = await fs.realpath(candidatePath).catch(() => candidatePath);
+-  return { kind: "ready", requestPath, ioPath: targetReal, workspaceReal };
+-}
+-
+-async function statFileSafely(filePath: string): Promise<FileMeta | null> {
+-  try {
+-    const [stat, lstat] = await Promise.all([fs.stat(filePath), fs.lstat(filePath)]);
+-    if (lstat.isSymbolicLink() || !stat.isFile()) {
+-      return null;
+-    }
+-    if (stat.nlink > 1) {
+-      return null;
+-    }
+-    if (!sameFileIdentity(stat, lstat)) {
++    const stat = await fs.stat(filePath);
++    if (!stat.isFile()) {
+       return null;
+     }
+     return {
+@@ -243,18 +126,8 @@ async function listAgentFiles(workspaceDir: string, options?: { hideBootstrap?:
+     ? BOOTSTRAP_FILE_NAMES_POST_ONBOARDING
+     : BOOTSTRAP_FILE_NAMES;
+   for (const name of bootstrapFileNames) {
+-    const resolved = await resolveAgentWorkspaceFilePath({
+-      workspaceDir,
+-      name,
+-      allowMissing: true,
+-    });
+-    const filePath = resolved.requestPath;
+-    const meta =
+-      resolved.kind === "ready"
+-        ? await statFileSafely(resolved.ioPath)
+-        : resolved.kind === "missing"
+-          ? null
+-          : null;
++    const filePath = path.join(workspaceDir, name);
++    const meta = await statFile(filePath);
+     if (meta) {
+       files.push({
+         name,
+@@ -268,43 +141,29 @@ async function listAgentFiles(workspaceDir: string, options?: { hideBootstrap?:
+     }
+   }
+ 
+-  const primaryResolved = await resolveAgentWorkspaceFilePath({
+-    workspaceDir,
+-    name: DEFAULT_MEMORY_FILENAME,
+-    allowMissing: true,
+-  });
+-  const primaryMeta =
+-    primaryResolved.kind === "ready" ? await statFileSafely(primaryResolved.ioPath) : null;
++  const primaryMemoryPath = path.join(workspaceDir, DEFAULT_MEMORY_FILENAME);
++  const primaryMeta = await statFile(primaryMemoryPath);
+   if (primaryMeta) {
+     files.push({
+       name: DEFAULT_MEMORY_FILENAME,
+-      path: primaryResolved.requestPath,
++      path: primaryMemoryPath,
+       missing: false,
+       size: primaryMeta.size,
+       updatedAtMs: primaryMeta.updatedAtMs,
+     });
+   } else {
+-    const altMemoryResolved = await resolveAgentWorkspaceFilePath({
+-      workspaceDir,
+-      name: DEFAULT_MEMORY_ALT_FILENAME,
+-      allowMissing: true,
+-    });
+-    const altMeta =
+-      altMemoryResolved.kind === "ready" ? await statFileSafely(altMemoryResolved.ioPath) : null;
++    const altMemoryPath = path.join(workspaceDir, DEFAULT_MEMORY_ALT_FILENAME);
++    const altMeta = await statFile(altMemoryPath);
+     if (altMeta) {
+       files.push({
+         name: DEFAULT_MEMORY_ALT_FILENAME,
+-        path: altMemoryResolved.requestPath,
++        path: altMemoryPath,
+         missing: false,
+         size: altMeta.size,
+         updatedAtMs: altMeta.updatedAtMs,
+       });
+     } else {
+-      files.push({
+-        name: DEFAULT_MEMORY_FILENAME,
+-        path: primaryResolved.requestPath,
+-        missing: true,
+-      });
++      files.push({ name: DEFAULT_MEMORY_FILENAME, path: primaryMemoryPath, missing: true });
+     }
+   }
+ 
+@@ -344,41 +203,24 @@ async function moveToTrashBestEffort(pathname: string): Promise<void> {
+   }
+ }
+ 
+-function respondWorkspaceFileInvalid(respond: RespondFn, name: string, reason: string): void {
+-  respond(
+-    false,
+-    undefined,
+-    errorShape(ErrorCodes.INVALID_REQUEST, `unsafe workspace file "${name}" (${reason})`),
+-  );
+-}
+-
+-function respondWorkspaceFileUnsafe(respond: RespondFn, name: string): void {
+-  respond(
+-    false,
+-    undefined,
+-    errorShape(ErrorCodes.INVALID_REQUEST, `unsafe workspace file "${name}"`),
+-  );
+-}
+-
+-function respondWorkspaceFileMissing(params: {
+-  respond: RespondFn;
+-  agentId: string;
+-  workspaceDir: string;
+-  name: string;
+-  filePath: string;
+-}): void {
+-  params.respond(
+-    true,
+-    {
+-      agentId: params.agentId,
+-      workspace: params.workspaceDir,
+-      file: { name: params.name, path: params.filePath, missing: true },
+-    },
+-    undefined,
+-  );
+-}
+-
+ export const agentsHandlers: GatewayRequestHandlers = {
++"agents.auth.check": async ({ params, respond }) => {
++  const provider = typeof params.provider === "string" ? params.provider.trim() : "";
++  if (!provider) {
++    respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "provider is required"));
++    return;
++  }
++  const cfg = loadConfig();
++  try {
++    const auth = await resolveApiKeyForProvider({ provider, cfg });
++    const valid = Boolean(
++      auth.apiKey || auth.mode === "oauth" || auth.mode === "token" || auth.mode === "aws-sdk",
++    );
++    respond(true, { valid, provider }, undefined);
++  } catch {
++    respond(true, { valid: false, provider }, undefined);
++  }
++},
+   "agents.list": ({ params, respond }) => {
+     if (!validateAgentsListParams(params)) {
+       respond(
+@@ -629,30 +471,20 @@ export const agentsHandlers: GatewayRequestHandlers = {
+     }
+     const { agentId, workspaceDir, name } = resolved;
+     const filePath = path.join(workspaceDir, name);
+-    const resolvedPath = await resolveAgentWorkspaceFilePath({
+-      workspaceDir,
+-      name,
+-      allowMissing: true,
+-    });
+-    if (resolvedPath.kind === "invalid") {
+-      respondWorkspaceFileInvalid(respond, name, resolvedPath.reason);
+-      return;
+-    }
+-    if (resolvedPath.kind === "missing") {
+-      respondWorkspaceFileMissing({ respond, agentId, workspaceDir, name, filePath });
+-      return;
+-    }
+-    let safeRead: Awaited<ReturnType<typeof readLocalFileSafely>>;
+-    try {
+-      safeRead = await readLocalFileSafely({ filePath: resolvedPath.ioPath });
+-    } catch (err) {
+-      if (err instanceof SafeOpenError && err.code === "not-found") {
+-        respondWorkspaceFileMissing({ respond, agentId, workspaceDir, name, filePath });
+-        return;
+-      }
+-      respondWorkspaceFileUnsafe(respond, name);
++    const meta = await statFile(filePath);
++    if (!meta) {
++      respond(
++        true,
++        {
++          agentId,
++          workspace: workspaceDir,
++          file: { name, path: filePath, missing: true },
++        },
++        undefined,
++      );
+       return;
+     }
++    const content = await fs.readFile(filePath, "utf-8");
+     respond(
+       true,
+       {
+@@ -662,9 +494,9 @@ export const agentsHandlers: GatewayRequestHandlers = {
+           name,
+           path: filePath,
+           missing: false,
+-          size: safeRead.stat.size,
+-          updatedAtMs: Math.floor(safeRead.stat.mtimeMs),
+-          content: safeRead.buffer.toString("utf-8"),
++          size: meta.size,
++          updatedAtMs: meta.updatedAtMs,
++          content,
+         },
+       },
+       undefined,
+@@ -691,28 +523,9 @@ export const agentsHandlers: GatewayRequestHandlers = {
+     const { agentId, workspaceDir, name } = resolved;
+     await fs.mkdir(workspaceDir, { recursive: true });
+     const filePath = path.join(workspaceDir, name);
+-    const resolvedPath = await resolveAgentWorkspaceFilePath({
+-      workspaceDir,
+-      name,
+-      allowMissing: true,
+-    });
+-    if (resolvedPath.kind === "invalid") {
+-      respondWorkspaceFileInvalid(respond, name, resolvedPath.reason);
+-      return;
+-    }
+     const content = String(params.content ?? "");
+-    try {
+-      await writeFileWithinRoot({
+-        rootDir: workspaceDir,
+-        relativePath: name,
+-        data: content,
+-        encoding: "utf8",
+-      });
+-    } catch {
+-      respondWorkspaceFileUnsafe(respond, name);
+-      return;
+-    }
+-    const meta = await statFileSafely(resolvedPath.ioPath);
++    await fs.writeFile(filePath, content, "utf-8");
++    const meta = await statFile(filePath);
+     respond(
+       true,
+       {
+diff --git a/ui/src/styles/components.css b/ui/src/styles/components.css
+index d6b87c4d7..5b1dcdf19 100644
+--- a/ui/src/styles/components.css
++++ b/ui/src/styles/components.css
+@@ -1,34 +1,5 @@
+ @import "./chat.css";
+ 
+-/* ===========================================
+-   Update Banner
+-   =========================================== */
+-
+-.update-banner {
+-  position: sticky;
+-  top: 0;
+-  z-index: 10;
+-  margin: 0 calc(-1 * var(--shell-pad)) 0;
+-  border-radius: 0;
+-  border-left: none;
+-  border-right: none;
+-  text-align: center;
+-  font-weight: 500;
+-  padding: 10px 16px;
+-}
+-
+-.update-banner__btn {
+-  margin-left: 8px;
+-  border-color: var(--danger);
+-  color: var(--danger);
+-  font-size: 12px;
+-  padding: 4px 12px;
+-}
+-
+-.update-banner__btn:hover:not(:disabled) {
+-  background: rgba(239, 68, 68, 0.15);
+-}
+-
+ /* ===========================================
+    Cards - Refined with depth
+    =========================================== */
+@@ -328,12 +299,6 @@
+   animation: none;
+ }
+ 
+-.statusDot.warn {
+-  background: var(--warn);
+-  box-shadow: 0 0 8px rgba(245, 158, 11, 0.5);
+-  animation: none;
+-}
+-
+ /* ===========================================
+    Buttons - Tactile with personality
+    =========================================== */
+@@ -532,443 +497,6 @@
+   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+ }
+ 
+-/* ===========================================
+-   Cron Form
+-   =========================================== */
+-
+-.cron-summary-strip {
+-  display: flex;
+-  justify-content: space-between;
+-  align-items: flex-start;
+-  gap: 12px 18px;
+-  padding: 14px 16px;
+-}
+-
+-.cron-summary-strip__left {
+-  display: grid;
+-  gap: 8px 14px;
+-  grid-template-columns: repeat(3, minmax(0, 1fr));
+-  flex: 1 1 auto;
+-  min-width: 0;
+-}
+-
+-.cron-summary-item {
+-  border: 1px solid var(--border);
+-  border-radius: var(--radius-md);
+-  background: var(--bg-elevated);
+-  padding: 10px 12px;
+-  min-height: 62px;
+-  display: grid;
+-  gap: 6px;
+-}
+-
+-.cron-summary-item--wide {
+-  grid-column: span 1;
+-}
+-
+-.cron-summary-label {
+-  color: var(--muted);
+-  font-size: 11px;
+-  font-weight: 600;
+-  text-transform: uppercase;
+-  letter-spacing: 0.04em;
+-}
+-
+-.cron-summary-value {
+-  color: var(--text-strong);
+-  font-size: 15px;
+-  font-weight: 600;
+-  line-height: 1.3;
+-  display: flex;
+-  align-items: center;
+-  gap: 8px;
+-}
+-
+-.cron-summary-strip__actions {
+-  display: flex;
+-  align-items: center;
+-  justify-content: flex-end;
+-  gap: 10px;
+-  min-width: 0;
+-}
+-
+-.cron-workspace {
+-  margin-top: 16px;
+-  display: grid;
+-  grid-template-columns: minmax(0, 1.2fr) minmax(340px, 0.8fr);
+-  gap: 16px;
+-  align-items: start;
+-}
+-
+-.cron-workspace-main {
+-  display: grid;
+-  gap: 16px;
+-}
+-
+-.cron-workspace-form {
+-  position: sticky;
+-  top: 74px;
+-  max-height: calc(100vh - 74px - 32px);
+-  overflow-y: auto;
+-}
+-
+-.cron-form {
+-  margin-top: 16px;
+-  display: grid;
+-  gap: 14px;
+-}
+-
+-.cron-form-section {
+-  border: 1px solid var(--border);
+-  border-radius: var(--radius-md);
+-  padding: 14px;
+-  background: var(--bg-elevated);
+-  display: grid;
+-  gap: 12px;
+-}
+-
+-.cron-form-section__title {
+-  font-size: 13px;
+-  font-weight: 600;
+-  letter-spacing: -0.01em;
+-  color: var(--text-strong);
+-}
+-
+-.cron-form-section__sub {
+-  color: var(--muted);
+-  font-size: 12px;
+-  line-height: 1.45;
+-}
+-
+-.cron-form-grid {
+-  grid-template-columns: repeat(2, minmax(0, 1fr));
+-  gap: 14px 16px;
+-}
+-
+-.cron-help {
+-  color: var(--muted);
+-  font-size: 12px;
+-  line-height: 1.45;
+-  margin-top: 2px;
+-}
+-
+-.cron-error {
+-  color: var(--danger-color);
+-}
+-
+-.cron-required-legend {
+-  color: var(--muted);
+-  font-size: 12px;
+-  line-height: 1.4;
+-}
+-
+-.cron-required-marker {
+-  color: var(--danger-color);
+-  font-weight: 700;
+-  margin-left: 3px;
+-}
+-
+-.cron-required-sr {
+-  position: absolute;
+-  width: 1px;
+-  height: 1px;
+-  padding: 0;
+-  margin: -1px;
+-  overflow: hidden;
+-  clip: rect(0, 0, 0, 0);
+-  white-space: nowrap;
+-  border: 0;
+-}
+-
+-.field input[aria-invalid="true"],
+-.field textarea[aria-invalid="true"],
+-.field select[aria-invalid="true"] {
+-  border-color: var(--danger);
+-  box-shadow:
+-    inset 0 1px 0 var(--card-highlight),
+-    0 0 0 1px rgba(239, 68, 68, 0.2);
+-}
+-
+-.cron-form-status {
+-  margin-top: 4px;
+-  border: 1px solid var(--danger-subtle);
+-  background: var(--danger-subtle);
+-  border-radius: var(--radius-md);
+-  padding: 10px 12px;
+-}
+-
+-.cron-form-status__title {
+-  color: var(--text-strong);
+-  font-size: 13px;
+-  font-weight: 600;
+-  margin-bottom: 6px;
+-}
+-
+-.cron-form-status__list {
+-  margin: 8px 0 0;
+-  padding: 0;
+-  list-style: none;
+-  display: grid;
+-  gap: 6px;
+-}
+-
+-.cron-form-status__link {
+-  border: 0;
+-  background: transparent;
+-  color: var(--text);
+-  cursor: pointer;
+-  font-size: 12px;
+-  line-height: 1.4;
+-  padding: 0;
+-  text-align: left;
+-  text-decoration: underline;
+-  text-underline-offset: 2px;
+-}
+-
+-.cron-form-status__link:hover {
+-  color: var(--text-strong);
+-}
+-
+-.cron-span-2 {
+-  grid-column: 1 / -1;
+-}
+-
+-.cron-checkbox {
+-  align-items: center;
+-  grid-template-columns: 16px minmax(0, 1fr);
+-  column-gap: 10px;
+-}
+-
+-.cron-checkbox input[type="checkbox"] {
+-  margin: 2px 0 0;
+-  width: 16px;
+-  height: 16px;
+-  accent-color: var(--accent);
+-}
+-
+-.cron-checkbox .field-checkbox__label {
+-  color: var(--text-strong);
+-  font-size: 13px;
+-  font-weight: 500;
+-}
+-
+-.cron-checkbox .cron-help {
+-  grid-column: 2;
+-}
+-
+-.cron-checkbox-inline {
+-  align-content: start;
+-  align-items: start;
+-  padding-top: 28px;
+-}
+-
+-.cron-advanced {
+-  border: 1px solid var(--border);
+-  border-radius: var(--radius-md);
+-  padding: 12px;
+-  background: var(--bg-elevated);
+-  display: grid;
+-  gap: 10px;
+-}
+-
+-.cron-advanced__summary {
+-  cursor: pointer;
+-  color: var(--muted);
+-  font-size: 13px;
+-  font-weight: 500;
+-}
+-
+-.cron-stagger-group {
+-  display: grid;
+-  grid-template-columns: minmax(0, 1fr) 180px;
+-  gap: 14px 16px;
+-  align-items: start;
+-}
+-
+-.cron-form-actions {
+-  margin-top: 14px;
+-  justify-content: flex-start;
+-  align-items: center;
+-  gap: 10px 14px;
+-  flex-wrap: wrap;
+-}
+-
+-.cron-submit-reason {
+-  color: var(--muted);
+-  font-size: 12px;
+-  line-height: 1.4;
+-}
+-
+-.cron-filter-search {
+-  flex: 1 1 320px;
+-  min-width: 280px;
+-}
+-
+-.cron-workspace .filters .field {
+-  min-width: 160px;
+-}
+-
+-.cron-run-filters {
+-  margin-top: 12px;
+-  display: grid;
+-  gap: 12px;
+-}
+-
+-.cron-run-filters__row {
+-  display: grid;
+-  gap: 12px;
+-}
+-
+-.cron-run-filters__row--primary {
+-  grid-template-columns: minmax(160px, 220px) minmax(240px, 1fr) minmax(160px, 220px);
+-}
+-
+-.cron-run-filters__row--secondary {
+-  grid-template-columns: repeat(2, minmax(220px, 1fr));
+-}
+-
+-.cron-run-filter-search {
+-  min-width: 0;
+-}
+-
+-.cron-filter-dropdown {
+-  min-width: 0;
+-}
+-
+-.cron-filter-dropdown__details {
+-  position: relative;
+-}
+-
+-.cron-filter-dropdown__details > summary {
+-  list-style: none;
+-}
+-
+-.cron-filter-dropdown__details > summary::-webkit-details-marker {
+-  display: none;
+-}
+-
+-.cron-filter-dropdown__trigger {
+-  width: 100%;
+-  justify-content: space-between;
+-  text-align: left;
+-}
+-
+-.cron-filter-dropdown__panel {
+-  position: absolute;
+-  z-index: 30;
+-  top: calc(100% + 8px);
+-  left: 0;
+-  width: min(360px, calc(100vw - 48px));
+-  border: 1px solid var(--border);
+-  border-radius: var(--radius-md);
+-  background: var(--bg-elevated);
+-  padding: 10px;
+-  display: grid;
+-  gap: 10px;
+-  box-shadow: var(--shadow-card);
+-}
+-
+-.cron-filter-dropdown__list {
+-  display: grid;
+-  gap: 6px;
+-}
+-
+-.cron-filter-dropdown__option {
+-  display: grid;
+-  grid-template-columns: 16px minmax(0, 1fr);
+-  gap: 8px;
+-  align-items: center;
+-  color: var(--text);
+-  font-size: 13px;
+-}
+-
+-.cron-filter-dropdown__option input[type="checkbox"] {
+-  width: 16px;
+-  height: 16px;
+-  margin: 0;
+-  accent-color: var(--accent);
+-}
+-
+-.cron-run-entry {
+-  align-items: start;
+-}
+-
+-.cron-run-entry__meta {
+-  text-align: right;
+-  min-width: 220px;
+-}
+-
+-.cron-run-entry__summary {
+-  white-space: pre-wrap;
+-  line-height: 1.45;
+-}
+-
+-@media (max-width: 1100px) {
+-  .cron-summary-strip {
+-    flex-direction: column;
+-  }
+-
+-  .cron-summary-strip__left {
+-    grid-template-columns: repeat(2, minmax(0, 1fr));
+-    width: 100%;
+-  }
+-
+-  .cron-summary-strip__actions {
+-    width: 100%;
+-    justify-content: flex-start;
+-    flex-wrap: wrap;
+-  }
+-
+-  .cron-workspace {
+-    grid-template-columns: 1fr;
+-  }
+-
+-  .cron-workspace-form {
+-    position: static;
+-    order: -1;
+-  }
+-
+-  .cron-form-grid {
+-    grid-template-columns: 1fr;
+-    gap: 12px;
+-  }
+-
+-  .cron-span-2 {
+-    grid-column: auto;
+-  }
+-
+-  .cron-checkbox-inline {
+-    padding-top: 0;
+-  }
+-
+-  .cron-stagger-group {
+-    grid-template-columns: 1fr;
+-    gap: 12px;
+-  }
+-
+-  .cron-filter-search {
+-    min-width: 0;
+-    flex: 1 1 100%;
+-  }
+-
+-  .cron-run-filters__row--primary,
+-  .cron-run-filters__row--secondary {
+-    grid-template-columns: 1fr;
+-  }
+-
+-  .cron-filter-dropdown__panel {
+-    width: 100%;
+-    max-width: none;
+-    position: static;
+-    margin-top: 8px;
+-  }
+-
+-  .cron-run-entry__meta {
+-    min-width: 0;
+-    text-align: left;
+-  }
+-}
+-
+ :root[data-theme="light"] .field input,
+ :root[data-theme="light"] .field textarea,
+ :root[data-theme="light"] .field select {
+@@ -985,12 +513,6 @@
+   background: var(--bg-hover);
+ }
+ 
+-:root[data-theme="light"] .btn.active {
+-  border-color: var(--accent);
+-  background: var(--accent-subtle);
+-  color: var(--accent);
+-}
+-
+ :root[data-theme="light"] .btn.primary {
+   background: var(--accent);
+   border-color: var(--accent);
+@@ -1084,16 +606,6 @@
+   border-color: rgba(34, 197, 94, 0.35);
+ }
+ 
+-.compaction-indicator--fallback {
+-  color: #d97706;
+-  border-color: rgba(217, 119, 6, 0.35);
+-}
+-
+-.compaction-indicator--fallback-cleared {
+-  color: var(--ok);
+-  border-color: rgba(34, 197, 94, 0.35);
+-}
+-
+ @keyframes compaction-spin {
+   to {
+     transform: rotate(360deg);
+@@ -1193,21 +705,6 @@
+   width: 100%;
+ }
+ 
+-/* Debug event log payloads should use full width like other debug sections. */
+-.debug-event-log__item {
+-  grid-template-columns: minmax(0, 1fr);
+-}
+-
+-.debug-event-log__meta {
+-  min-width: 0;
+-  text-align: left;
+-}
+-
+-.debug-event-log__payload {
+-  margin: 0;
+-  max-width: 100%;
+-}
+-
+ /* Cron jobs: allow long payload/state text and keep action buttons inside the card. */
+ .cron-job-payload,
+ .cron-job-agent,
+@@ -2607,3 +2104,64 @@
+     grid-template-columns: 1fr;
+   }
+ }
++
++/* =========================================
++   API Key Warning Modal
++   ========================================= */
++
++.api-key-modal-overlay {
++  position: fixed;
++  inset: 0;
++  background: rgba(0, 0, 0, 0.7);
++  backdrop-filter: blur(4px);
++  display: flex;
++  align-items: center;
++  justify-content: center;
++  padding: 24px;
++  z-index: 201;
++}
++
++.api-key-modal-card {
++  width: min(480px, 100%);
++  background: var(--card);
++  border: 1px solid var(--danger, #e53e3e);
++  border-radius: var(--radius-lg);
++  padding: 20px;
++  animation: scale-in 0.2s var(--ease-out);
++}
++
++.api-key-modal-header {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 12px;
++  margin-bottom: 12px;
++}
++
++.api-key-modal-title {
++  font-size: 1rem;
++  font-weight: 600;
++  color: var(--danger, #e53e3e);
++}
++
++.api-key-modal-close {
++  background: none;
++  border: none;
++  cursor: pointer;
++  font-size: 1.1rem;
++  color: var(--text-muted);
++  padding: 2px 6px;
++  border-radius: var(--radius-sm);
++}
++
++.api-key-modal-close:hover { background: var(--bg-hover); }
++
++.api-key-modal-body { margin-bottom: 16px; line-height: 1.5; }
++
++.api-key-modal-hint {
++  margin-top: 8px;
++  font-size: 0.85rem;
++  color: var(--text-muted);
++}
++
++.api-key-modal-actions { display: flex; justify-content: flex-end; }
+diff --git a/ui/src/ui/app-render.ts b/ui/src/ui/app-render.ts
+index 7bf0665de..ca0b67dfe 100644
+--- a/ui/src/ui/app-render.ts
++++ b/ui/src/ui/app-render.ts
+@@ -8,7 +8,7 @@ import type { AppViewState } from "./app-view-state.ts";
+ import { loadAgentFileContent, loadAgentFiles, saveAgentFile } from "./controllers/agent-files.ts";
+ import { loadAgentIdentities, loadAgentIdentity } from "./controllers/agent-identity.ts";
+ import { loadAgentSkills } from "./controllers/agent-skills.ts";
+-import { loadAgents, loadToolsCatalog } from "./controllers/agents.ts";
++import { loadAgents } from "./controllers/agents.ts";
+ import { loadChannels } from "./controllers/channels.ts";
+ import { loadChatHistory } from "./controllers/chat.ts";
+ import {
+@@ -21,22 +21,11 @@ import {
+ } from "./controllers/config.ts";
+ import {
+   loadCronRuns,
+-  loadMoreCronJobs,
+-  loadMoreCronRuns,
+-  reloadCronJobs,
+   toggleCronJob,
+   runCronJob,
+   removeCronJob,
+   addCronJob,
+-  startCronEdit,
+-  startCronClone,
+-  cancelCronEdit,
+-  validateCronForm,
+-  hasCronFormErrors,
+   normalizeCronFormState,
+-  getVisibleCronJobs,
+-  updateCronJobsFilter,
+-  updateCronRunsFilter,
+ } from "./controllers/cron.ts";
+ import { loadDebug, callDebugMethod } from "./controllers/debug.ts";
+ import {
+@@ -63,16 +52,15 @@ import {
+   updateSkillEdit,
+   updateSkillEnabled,
+ } from "./controllers/skills.ts";
+-import { buildExternalLinkRel, EXTERNAL_LINK_TARGET } from "./external-link.ts";
+ import { icons } from "./icons.ts";
+ import { normalizeBasePath, TAB_GROUPS, subtitleForTab, titleForTab } from "./navigation.ts";
+-import { resolveConfiguredCronModelSuggestions } from "./views/agents-utils.ts";
+ import { renderAgents } from "./views/agents.ts";
+ import { renderChannels } from "./views/channels.ts";
+ import { renderChat } from "./views/chat.ts";
+ import { renderConfig } from "./views/config.ts";
+ import { renderCron } from "./views/cron.ts";
+ import { renderDebug } from "./views/debug.ts";
++import { renderApiKeyModal } from "./components/modal.ts";
+ import { renderExecApprovalPrompt } from "./views/exec-approval.ts";
+ import { renderGatewayUrlConfirmation } from "./views/gateway-url-confirmation.ts";
+ import { renderInstances } from "./views/instances.ts";
+@@ -84,43 +72,6 @@ import { renderSkills } from "./views/skills.ts";
+ 
+ const AVATAR_DATA_RE = /^data:/i;
+ const AVATAR_HTTP_RE = /^https?:\/\//i;
+-const CRON_THINKING_SUGGESTIONS = ["off", "minimal", "low", "medium", "high"];
+-const CRON_TIMEZONE_SUGGESTIONS = [
+-  "UTC",
+-  "America/Los_Angeles",
+-  "America/Denver",
+-  "America/Chicago",
+-  "America/New_York",
+-  "Europe/London",
+-  "Europe/Berlin",
+-  "Asia/Tokyo",
+-];
+-
+-function isHttpUrl(value: string): boolean {
+-  return /^https?:\/\//i.test(value.trim());
+-}
+-
+-function normalizeSuggestionValue(value: unknown): string {
+-  return typeof value === "string" ? value.trim() : "";
+-}
+-
+-function uniquePreserveOrder(values: string[]): string[] {
+-  const seen = new Set<string>();
+-  const output: string[] = [];
+-  for (const value of values) {
+-    const normalized = value.trim();
+-    if (!normalized) {
+-      continue;
+-    }
+-    const key = normalized.toLowerCase();
+-    if (seen.has(key)) {
+-      continue;
+-    }
+-    seen.add(key);
+-    output.push(normalized);
+-  }
+-  return output;
+-}
+ 
+ function resolveAssistantAvatarUrl(state: AppViewState): string | undefined {
+   const list = state.agentsList?.agents ?? [];
+@@ -139,16 +90,6 @@ function resolveAssistantAvatarUrl(state: AppViewState): string | undefined {
+ }
+ 
+ export function renderApp(state: AppViewState) {
+-  const openClawVersion =
+-    (typeof state.hello?.server?.version === "string" && state.hello.server.version.trim()) ||
+-    state.updateAvailable?.currentVersion ||
+-    t("common.na");
+-  const availableUpdate =
+-    state.updateAvailable &&
+-    state.updateAvailable.latestVersion !== state.updateAvailable.currentVersion
+-      ? state.updateAvailable
+-      : null;
+-  const versionStatusClass = availableUpdate ? "warn" : "ok";
+   const presenceCount = state.presenceEntries.length;
+   const sessionsCount = state.sessionsResult?.count ?? null;
+   const cronNext = state.cronStatus?.nextWakeAtMs ?? null;
+@@ -166,59 +107,6 @@ export function renderApp(state: AppViewState) {
+     state.agentsList?.defaultId ??
+     state.agentsList?.agents?.[0]?.id ??
+     null;
+-  const cronAgentSuggestions = Array.from(
+-    new Set(
+-      [
+-        ...(state.agentsList?.agents?.map((entry) => entry.id.trim()) ?? []),
+-        ...state.cronJobs
+-          .map((job) => (typeof job.agentId === "string" ? job.agentId.trim() : ""))
+-          .filter(Boolean),
+-      ].filter(Boolean),
+-    ),
+-  ).toSorted((a, b) => a.localeCompare(b));
+-  const cronModelSuggestions = Array.from(
+-    new Set(
+-      [
+-        ...state.cronModelSuggestions,
+-        ...resolveConfiguredCronModelSuggestions(configValue),
+-        ...state.cronJobs
+-          .map((job) => {
+-            if (job.payload.kind !== "agentTurn" || typeof job.payload.model !== "string") {
+-              return "";
+-            }
+-            return job.payload.model.trim();
+-          })
+-          .filter(Boolean),
+-      ].filter(Boolean),
+-    ),
+-  ).toSorted((a, b) => a.localeCompare(b));
+-  const visibleCronJobs = getVisibleCronJobs(state);
+-  const selectedDeliveryChannel =
+-    state.cronForm.deliveryChannel && state.cronForm.deliveryChannel.trim()
+-      ? state.cronForm.deliveryChannel.trim()
+-      : "last";
+-  const jobToSuggestions = state.cronJobs
+-    .map((job) => normalizeSuggestionValue(job.delivery?.to))
+-    .filter(Boolean);
+-  const accountToSuggestions = (
+-    selectedDeliveryChannel === "last"
+-      ? Object.values(state.channelsSnapshot?.channelAccounts ?? {}).flat()
+-      : (state.channelsSnapshot?.channelAccounts?.[selectedDeliveryChannel] ?? [])
+-  )
+-    .flatMap((account) => [
+-      normalizeSuggestionValue(account.accountId),
+-      normalizeSuggestionValue(account.name),
+-    ])
+-    .filter(Boolean);
+-  const rawDeliveryToSuggestions = uniquePreserveOrder([
+-    ...jobToSuggestions,
+-    ...accountToSuggestions,
+-  ]);
+-  const accountSuggestions = uniquePreserveOrder(accountToSuggestions);
+-  const deliveryToSuggestions =
+-    state.cronForm.deliveryMode === "webhook"
+-      ? rawDeliveryToSuggestions.filter((value) => isHttpUrl(value))
+-      : rawDeliveryToSuggestions;
+ 
+   return html`
+     <div class="shell ${isChat ? "shell--chat" : ""} ${chatFocus ? "shell--chat-focus" : ""} ${state.settings.navCollapsed ? "shell--nav-collapsed" : ""} ${state.onboarding ? "shell--onboarding" : ""}">
+@@ -247,11 +135,6 @@ export function renderApp(state: AppViewState) {
+           </div>
+         </div>
+         <div class="topbar-status">
+-          <div class="pill">
+-            <span class="statusDot ${versionStatusClass}"></span>
+-            <span>${t("common.version")}</span>
+-            <span class="mono">${openClawVersion}</span>
+-          </div>
+           <div class="pill">
+             <span class="statusDot ${state.connected ? "ok" : ""}"></span>
+             <span>${t("common.health")}</span>
+@@ -295,8 +178,8 @@ export function renderApp(state: AppViewState) {
+             <a
+               class="nav-item nav-item--external"
+               href="https://docs.openclaw.ai"
+-              target=${EXTERNAL_LINK_TARGET}
+-              rel=${buildExternalLinkRel()}
++              target="_blank"
++              rel="noreferrer"
+               title="${t("common.docs")} (opens in new tab)"
+             >
+               <span class="nav-item__icon" aria-hidden="true">${icons.book}</span>
+@@ -306,19 +189,6 @@ export function renderApp(state: AppViewState) {
+         </div>
+       </aside>
+       <main class="content ${isChat ? "content--chat" : ""}">
+-        ${
+-          availableUpdate
+-            ? html`<div class="update-banner callout danger" role="alert">
+-              <strong>Update available:</strong> v${availableUpdate.latestVersion}
+-              (running v${availableUpdate.currentVersion}).
+-              <button
+-                class="btn btn--sm update-banner__btn"
+-                ?disabled=${state.updateRunning || !state.connected}
+-                @click=${() => runUpdate(state)}
+-              >${state.updateRunning ? "Updating…" : "Update now"}</button>
+-            </div>`
+-            : nothing
+-        }
+         <section class="content-header">
+           <div>
+             ${state.tab === "usage" ? nothing : html`<div class="page-title">${titleForTab(state.tab)}</div>`}
+@@ -338,7 +208,6 @@ export function renderApp(state: AppViewState) {
+                 settings: state.settings,
+                 password: state.password,
+                 lastError: state.lastError,
+-                lastErrorCode: state.lastErrorCode,
+                 presenceCount,
+                 sessionsCount,
+                 cronEnabled: state.cronStatus?.enabled ?? null,
+@@ -445,23 +314,11 @@ export function renderApp(state: AppViewState) {
+             ? renderCron({
+                 basePath: state.basePath,
+                 loading: state.cronLoading,
+-                jobsLoadingMore: state.cronJobsLoadingMore,
+                 status: state.cronStatus,
+-                jobs: visibleCronJobs,
+-                jobsTotal: state.cronJobsTotal,
+-                jobsHasMore: state.cronJobsHasMore,
+-                jobsQuery: state.cronJobsQuery,
+-                jobsEnabledFilter: state.cronJobsEnabledFilter,
+-                jobsScheduleKindFilter: state.cronJobsScheduleKindFilter,
+-                jobsLastStatusFilter: state.cronJobsLastStatusFilter,
+-                jobsSortBy: state.cronJobsSortBy,
+-                jobsSortDir: state.cronJobsSortDir,
++                jobs: state.cronJobs,
+                 error: state.cronError,
+                 busy: state.cronBusy,
+                 form: state.cronForm,
+-                fieldErrors: state.cronFieldErrors,
+-                canSubmit: !hasCronFormErrors(state.cronFieldErrors),
+-                editingJobId: state.cronEditingJobId,
+                 channels: state.channelsSnapshot?.channelMeta?.length
+                   ? state.channelsSnapshot.channelMeta.map((entry) => entry.id)
+                   : (state.channelsSnapshot?.channelOrder ?? []),
+@@ -469,69 +326,14 @@ export function renderApp(state: AppViewState) {
+                 channelMeta: state.channelsSnapshot?.channelMeta ?? [],
+                 runsJobId: state.cronRunsJobId,
+                 runs: state.cronRuns,
+-                runsTotal: state.cronRunsTotal,
+-                runsHasMore: state.cronRunsHasMore,
+-                runsLoadingMore: state.cronRunsLoadingMore,
+-                runsScope: state.cronRunsScope,
+-                runsStatuses: state.cronRunsStatuses,
+-                runsDeliveryStatuses: state.cronRunsDeliveryStatuses,
+-                runsStatusFilter: state.cronRunsStatusFilter,
+-                runsQuery: state.cronRunsQuery,
+-                runsSortDir: state.cronRunsSortDir,
+-                agentSuggestions: cronAgentSuggestions,
+-                modelSuggestions: cronModelSuggestions,
+-                thinkingSuggestions: CRON_THINKING_SUGGESTIONS,
+-                timezoneSuggestions: CRON_TIMEZONE_SUGGESTIONS,
+-                deliveryToSuggestions,
+-                accountSuggestions,
+-                onFormChange: (patch) => {
+-                  state.cronForm = normalizeCronFormState({ ...state.cronForm, ...patch });
+-                  state.cronFieldErrors = validateCronForm(state.cronForm);
+-                },
++                onFormChange: (patch) =>
++                  (state.cronForm = normalizeCronFormState({ ...state.cronForm, ...patch })),
+                 onRefresh: () => state.loadCron(),
+                 onAdd: () => addCronJob(state),
+-                onEdit: (job) => startCronEdit(state, job),
+-                onClone: (job) => startCronClone(state, job),
+-                onCancelEdit: () => cancelCronEdit(state),
+                 onToggle: (job, enabled) => toggleCronJob(state, job, enabled),
+-                onRun: (job, mode) => runCronJob(state, job, mode ?? "force"),
++                onRun: (job) => runCronJob(state, job),
+                 onRemove: (job) => removeCronJob(state, job),
+-                onLoadRuns: async (jobId) => {
+-                  updateCronRunsFilter(state, { cronRunsScope: "job" });
+-                  await loadCronRuns(state, jobId);
+-                },
+-                onLoadMoreJobs: () => loadMoreCronJobs(state),
+-                onJobsFiltersChange: async (patch) => {
+-                  updateCronJobsFilter(state, patch);
+-                  const shouldReload =
+-                    typeof patch.cronJobsQuery === "string" ||
+-                    Boolean(patch.cronJobsEnabledFilter) ||
+-                    Boolean(patch.cronJobsSortBy) ||
+-                    Boolean(patch.cronJobsSortDir);
+-                  if (shouldReload) {
+-                    await reloadCronJobs(state);
+-                  }
+-                },
+-                onJobsFiltersReset: async () => {
+-                  updateCronJobsFilter(state, {
+-                    cronJobsQuery: "",
+-                    cronJobsEnabledFilter: "all",
+-                    cronJobsScheduleKindFilter: "all",
+-                    cronJobsLastStatusFilter: "all",
+-                    cronJobsSortBy: "nextRunAtMs",
+-                    cronJobsSortDir: "asc",
+-                  });
+-                  await reloadCronJobs(state);
+-                },
+-                onLoadMoreRuns: () => loadMoreCronRuns(state),
+-                onRunsFiltersChange: async (patch) => {
+-                  updateCronRunsFilter(state, patch);
+-                  if (state.cronRunsScope === "all") {
+-                    await loadCronRuns(state, null);
+-                    return;
+-                  }
+-                  await loadCronRuns(state, state.cronRunsJobId);
+-                },
++                onLoadRuns: (jobId) => loadCronRuns(state, jobId),
+               })
+             : nothing
+         }
+@@ -548,6 +350,7 @@ export function renderApp(state: AppViewState) {
+                 configLoading: state.configLoading,
+                 configSaving: state.configSaving,
+                 configDirty: state.configFormDirty,
++                modelKeyError: state.agentsModelKeyError ?? null,
+                 channelsLoading: state.channelsLoading,
+                 channelsError: state.channelsError,
+                 channelsSnapshot: state.channelsSnapshot,
+@@ -570,18 +373,9 @@ export function renderApp(state: AppViewState) {
+                 agentSkillsReport: state.agentSkillsReport,
+                 agentSkillsError: state.agentSkillsError,
+                 agentSkillsAgentId: state.agentSkillsAgentId,
+-                toolsCatalogLoading: state.toolsCatalogLoading,
+-                toolsCatalogError: state.toolsCatalogError,
+-                toolsCatalogResult: state.toolsCatalogResult,
+                 skillsFilter: state.skillsFilter,
+                 onRefresh: async () => {
+                   await loadAgents(state);
+-                  const nextSelected =
+-                    state.agentsSelectedId ??
+-                    state.agentsList?.defaultId ??
+-                    state.agentsList?.agents?.[0]?.id ??
+-                    null;
+-                  await loadToolsCatalog(state, nextSelected);
+                   const agentIds = state.agentsList?.agents?.map((entry) => entry.id) ?? [];
+                   if (agentIds.length > 0) {
+                     void loadAgentIdentities(state, agentIds);
+@@ -602,9 +396,6 @@ export function renderApp(state: AppViewState) {
+                   state.agentSkillsError = null;
+                   state.agentSkillsAgentId = null;
+                   void loadAgentIdentity(state, agentId);
+-                  if (state.agentsPanel === "tools") {
+-                    void loadToolsCatalog(state, agentId);
+-                  }
+                   if (state.agentsPanel === "files") {
+                     void loadAgentFiles(state, agentId);
+                   }
+@@ -624,9 +415,6 @@ export function renderApp(state: AppViewState) {
+                       void loadAgentFiles(state, resolvedAgentId);
+                     }
+                   }
+-                  if (panel === "tools") {
+-                    void loadToolsCatalog(state, resolvedAgentId);
+-                  }
+                   if (panel === "skills") {
+                     if (resolvedAgentId) {
+                       void loadAgentSkills(state, resolvedAgentId);
+@@ -720,8 +508,36 @@ export function renderApp(state: AppViewState) {
+                     removeConfigFormValue(state, [...basePath, "deny"]);
+                   }
+                 },
+-                onConfigReload: () => loadConfig(state),
+-                onConfigSave: () => saveConfig(state),
++                onConfigReload: () => {
++                  state.agentsModelKeyError = null;
++                  state.agentsModelKeyModalError = null;
++                  loadConfig(state);
++                },
++                onConfigSave: async () => {
++                  if (!state.client) {
++                    return;
++                  }
++                  state.agentsModelKeyError = null;
++                  state.agentsModelKeyModalError = null;
++                  const cfg = state.configForm as { agents?: { defaults?: { model?: unknown }; list?: Array<{ id?: string; model?: unknown }> } } | null;
++                  const agentEntry = cfg?.agents?.list?.find((e) => e?.id === resolvedAgentId);
++                  const rawModel = agentEntry?.model ?? cfg?.agents?.defaults?.model;
++                  const primary = typeof rawModel === "string" ? rawModel : (rawModel as { primary?: string } | null)?.primary ?? null;
++                  const provider = primary ? primary.split("/")[0] : null;
++                  if (provider) {
++                    try {
++                      const res = await state.client.request<{ valid: boolean; provider: string }>("agents.auth.check", { provider });
++                      if (!res.valid) {
++                        state.agentsModelKeyError = `API key for "${provider}" is missing or invalid`;
++                        return;
++                      }
++                    } catch {
++                      state.agentsModelKeyError = `Cannot verify API key for provider "${provider}"`;
++                      return;
++                    }
++                  }
++                  void saveConfig(state);
++                },
+                 onChannelsRefresh: () => loadChannels(state, false),
+                 onCronRefresh: () => state.loadCron(),
+                 onSkillsFilterChange: (next) => (state.skillsFilter = next),
+@@ -812,60 +628,70 @@ export function renderApp(state: AppViewState) {
+                   if (!configValue) {
+                     return;
+                   }
+-                  const list = (configValue as { agents?: { list?: unknown[] } }).agents?.list;
+-                  if (!Array.isArray(list)) {
+-                    return;
+-                  }
+-                  const index = list.findIndex(
+-                    (entry) =>
+-                      entry &&
+-                      typeof entry === "object" &&
+-                      "id" in entry &&
+-                      (entry as { id?: string }).id === agentId,
+-                  );
+-                  if (index < 0) {
+-                    return;
+-                  }
+-                  const basePath = ["agents", "list", index, "model"];
++                  const agentList = (configValue as { agents?: { list?: unknown[] } }).agents?.list;
++                  const agentIndex = Array.isArray(agentList)
++                    ? agentList.findIndex(
++                        (e) => e && typeof e === "object" && (e as { id?: string }).id === agentId,
++                      )
++                    : -1;
++                  const basePath =
++                    agentIndex >= 0
++                      ? ["agents", "list", agentIndex, "model"]
++                      : ["agents", "defaults", "model"];
+                   if (!modelId) {
+                     removeConfigFormValue(state, basePath);
+-                    return;
+-                  }
+-                  const entry = list[index] as { model?: unknown };
+-                  const existing = entry?.model;
+-                  if (existing && typeof existing === "object" && !Array.isArray(existing)) {
+-                    const fallbacks = (existing as { fallbacks?: unknown }).fallbacks;
+-                    const next = {
+-                      primary: modelId,
+-                      ...(Array.isArray(fallbacks) ? { fallbacks } : {}),
+-                    };
+-                    updateConfigFormValue(state, basePath, next);
+                   } else {
+-                    updateConfigFormValue(state, basePath, modelId);
++                    const existing =
++                      agentIndex >= 0
++                        ? (agentList![agentIndex] as { model?: unknown })?.model
++                        : (configValue as { agents?: { defaults?: { model?: unknown } } }).agents
++                            ?.defaults?.model;
++                    if (existing && typeof existing === "object" && !Array.isArray(existing)) {
++                      const fallbacks = (existing as { fallbacks?: unknown }).fallbacks;
++                      updateConfigFormValue(state, basePath, {
++                        primary: modelId,
++                        ...(Array.isArray(fallbacks) ? { fallbacks } : {}),
++                      });
++                    } else {
++                      updateConfigFormValue(state, basePath, modelId);
++                    }
++                  }
++                  // Scenario 2: check key validity on model change
++                  const provider = modelId ? modelId.split("/")[0] : null;
++                  if (provider && state.client) {
++                    state.agentsModelKeyError = null;
++                    void state.client
++                      .request<{ valid: boolean; provider: string }>("agents.auth.check", {
++                        provider,
++                      })
++                      .then((res) => {
++                        if (!res.valid) {
++                          state.agentsModelKeyError = `API key for "${provider}" is missing or invalid`;
++                        }
++                      })
++                      .catch(() => {});
+                   }
+                 },
+                 onModelFallbacksChange: (agentId, fallbacks) => {
+                   if (!configValue) {
+                     return;
+                   }
+-                  const list = (configValue as { agents?: { list?: unknown[] } }).agents?.list;
+-                  if (!Array.isArray(list)) {
+-                    return;
+-                  }
+-                  const index = list.findIndex(
+-                    (entry) =>
+-                      entry &&
+-                      typeof entry === "object" &&
+-                      "id" in entry &&
+-                      (entry as { id?: string }).id === agentId,
+-                  );
+-                  if (index < 0) {
+-                    return;
+-                  }
+-                  const basePath = ["agents", "list", index, "model"];
+-                  const entry = list[index] as { model?: unknown };
++                  const agentList = (configValue as { agents?: { list?: unknown[] } }).agents?.list;
++                  const agentIndex = Array.isArray(agentList)
++                    ? agentList.findIndex(
++                        (e) => e && typeof e === "object" && (e as { id?: string }).id === agentId,
++                      )
++                    : -1;
++                  const basePath =
++                    agentIndex >= 0
++                      ? ["agents", "list", agentIndex, "model"]
++                      : ["agents", "defaults", "model"];
+                   const normalized = fallbacks.map((name) => name.trim()).filter(Boolean);
+-                  const existing = entry.model;
++                  const existing =
++                    agentIndex >= 0
++                      ? (agentList![agentIndex] as { model?: unknown })?.model
++                      : (configValue as { agents?: { defaults?: { model?: unknown } } }).agents
++                          ?.defaults?.model;
+                   const resolvePrimary = () => {
+                     if (typeof existing === "string") {
+                       return existing.trim() || null;
+@@ -1025,7 +851,6 @@ export function renderApp(state: AppViewState) {
+                 loading: state.chatLoading,
+                 sending: state.chatSending,
+                 compactionStatus: state.compactionStatus,
+-                fallbackStatus: state.fallbackStatus,
+                 assistantAvatarUrl: chatAvatarUrl,
+                 messages: state.chatMessages,
+                 toolMessages: state.chatToolMessages,
+@@ -1161,6 +986,7 @@ export function renderApp(state: AppViewState) {
+             : nothing
+         }
+       </main>
++      ${renderApiKeyModal(state)}
+       ${renderExecApprovalPrompt(state)}
+       ${renderGatewayUrlConfirmation(state)}
+     </div>
+diff --git a/ui/src/ui/app-settings.ts b/ui/src/ui/app-settings.ts
+index 2c07fc0f8..eaa386402 100644
+--- a/ui/src/ui/app-settings.ts
++++ b/ui/src/ui/app-settings.ts
+@@ -9,15 +9,10 @@ import { scheduleChatScroll, scheduleLogsScroll } from "./app-scroll.ts";
+ import type { OpenClawApp } from "./app.ts";
+ import { loadAgentIdentities, loadAgentIdentity } from "./controllers/agent-identity.ts";
+ import { loadAgentSkills } from "./controllers/agent-skills.ts";
+-import { loadAgents, loadToolsCatalog } from "./controllers/agents.ts";
++import { loadAgents } from "./controllers/agents.ts";
+ import { loadChannels } from "./controllers/channels.ts";
+ import { loadConfig, loadConfigSchema } from "./controllers/config.ts";
+-import {
+-  loadCronJobs,
+-  loadCronModelSuggestions,
+-  loadCronRuns,
+-  loadCronStatus,
+-} from "./controllers/cron.ts";
++import { loadCronJobs, loadCronStatus } from "./controllers/cron.ts";
+ import { loadDebug } from "./controllers/debug.ts";
+ import { loadDevices } from "./controllers/devices.ts";
+ import { loadExecApprovals } from "./controllers/exec-approvals.ts";
+@@ -149,7 +144,24 @@ export function applySettingsFromUrl(host: SettingsHost) {
+ }
+ 
+ export function setTab(host: SettingsHost, next: Tab) {
+-  applyTabSelection(host, next, { refreshPolicy: "always", syncUrl: true });
++  if (host.tab !== next) {
++    host.tab = next;
++  }
++  if (next === "chat") {
++    host.chatHasAutoScrolled = false;
++  }
++  if (next === "logs") {
++    startLogsPolling(host as unknown as Parameters<typeof startLogsPolling>[0]);
++  } else {
++    stopLogsPolling(host as unknown as Parameters<typeof stopLogsPolling>[0]);
++  }
++  if (next === "debug") {
++    startDebugPolling(host as unknown as Parameters<typeof startDebugPolling>[0]);
++  } else {
++    stopDebugPolling(host as unknown as Parameters<typeof stopDebugPolling>[0]);
++  }
++  void refreshActiveTab(host);
++  syncUrlWithTab(host, next, false);
+ }
+ 
+ export function setTheme(host: SettingsHost, next: ThemeMode, context?: ThemeTransitionContext) {
+@@ -187,7 +199,6 @@ export async function refreshActiveTab(host: SettingsHost) {
+   }
+   if (host.tab === "agents") {
+     await loadAgents(host as unknown as OpenClawApp);
+-    await loadToolsCatalog(host as unknown as OpenClawApp);
+     await loadConfig(host as unknown as OpenClawApp);
+     const agentIds = host.agentsList?.agents?.map((entry) => entry.id) ?? [];
+     if (agentIds.length > 0) {
+@@ -207,6 +218,26 @@ export async function refreshActiveTab(host: SettingsHost) {
+         void loadCron(host);
+       }
+     }
++    // Scenario 1: check current primary model key on tab open
++    const app = host as unknown as OpenClawApp;
++    if (app.client) {
++      const cfg = app.configForm as { agents?: { defaults?: { model?: unknown } } } | null;
++      const model = cfg?.agents?.defaults?.model;
++      const primary =
++        typeof model === "string" ? model : (model as { primary?: string } | null)?.primary ?? null;
++      const provider = primary ? primary.split("/")[0] : null;
++      if (provider) {
++        app.agentsModelKeyModalError = null;
++        void app.client
++          .request<{ valid: boolean; provider: string }>("agents.auth.check", { provider })
++          .then((res) => {
++            if (!res.valid) {
++              app.agentsModelKeyModalError = `API key for "${provider}" is missing or invalid`;
++            }
++          })
++          .catch(() => {});
++      }
++    }
+   }
+   if (host.tab === "nodes") {
+     await loadNodes(host as unknown as OpenClawApp);
+@@ -332,14 +363,6 @@ export function onPopState(host: SettingsHost) {
+ }
+ 
+ export function setTabFromRoute(host: SettingsHost, next: Tab) {
+-  applyTabSelection(host, next, { refreshPolicy: "connected" });
+-}
+-
+-function applyTabSelection(
+-  host: SettingsHost,
+-  next: Tab,
+-  options: { refreshPolicy: "always" | "connected"; syncUrl?: boolean },
+-) {
+   if (host.tab !== next) {
+     host.tab = next;
+   }
+@@ -356,14 +379,9 @@ function applyTabSelection(
+   } else {
+     stopDebugPolling(host as unknown as Parameters<typeof stopDebugPolling>[0]);
+   }
+-
+-  if (options.refreshPolicy === "always" || host.connected) {
++  if (host.connected) {
+     void refreshActiveTab(host);
+   }
+-
+-  if (options.syncUrl) {
+-    syncUrlWithTab(host, next, false);
+-  }
+ }
+ 
+ export function syncUrlWithTab(host: SettingsHost, tab: Tab, replace: boolean) {
+@@ -423,18 +441,9 @@ export async function loadChannelsTab(host: SettingsHost) {
+ }
+ 
+ export async function loadCron(host: SettingsHost) {
+-  const cronHost = host as unknown as OpenClawApp;
+   await Promise.all([
+     loadChannels(host as unknown as OpenClawApp, false),
+-    loadCronStatus(cronHost),
+-    loadCronJobs(cronHost),
+-    loadCronModelSuggestions(cronHost),
++    loadCronStatus(host as unknown as OpenClawApp),
++    loadCronJobs(host as unknown as OpenClawApp),
+   ]);
+-  if (cronHost.cronRunsScope === "all") {
+-    await loadCronRuns(cronHost, null);
+-    return;
+-  }
+-  if (cronHost.cronRunsJobId) {
+-    await loadCronRuns(cronHost, cronHost.cronRunsJobId);
+-  }
+ }
+diff --git a/ui/src/ui/app-view-state.ts b/ui/src/ui/app-view-state.ts
+index c5cf3573a..8cee151a5 100644
+--- a/ui/src/ui/app-view-state.ts
++++ b/ui/src/ui/app-view-state.ts
+@@ -1,6 +1,5 @@
+ import type { EventLogEntry } from "./app-events.ts";
+-import type { CompactionStatus, FallbackStatus } from "./app-tool-stream.ts";
+-import type { CronModelSuggestionsState, CronState } from "./controllers/cron.ts";
++import type { CompactionStatus } from "./app-tool-stream.ts";
+ import type { DevicePairingList } from "./controllers/devices.ts";
+ import type { ExecApprovalRequest } from "./controllers/exec-approval.ts";
+ import type { ExecApprovalsFile, ExecApprovalsSnapshot } from "./controllers/exec-approvals.ts";
+@@ -17,6 +16,9 @@ import type {
+   ChannelsStatusSnapshot,
+   ConfigSnapshot,
+   ConfigUiHints,
++  CronJob,
++  CronRunLogEntry,
++  CronStatus,
+   HealthSnapshot,
+   LogEntry,
+   LogLevel,
+@@ -27,10 +29,9 @@ import type {
+   SessionUsageTimeSeries,
+   SessionsListResult,
+   SkillStatusReport,
+-  ToolsCatalogResult,
+   StatusSummary,
+ } from "./types.ts";
+-import type { ChatAttachment, ChatQueueItem } from "./ui-types.ts";
++import type { ChatAttachment, ChatQueueItem, CronFormState } from "./ui-types.ts";
+ import type { NostrProfileFormState } from "./views/channels.nostr-profile-form.ts";
+ import type { SessionLogEntry } from "./views/usage.ts";
+ 
+@@ -45,7 +46,6 @@ export type AppViewState = {
+   themeResolved: "light" | "dark";
+   hello: GatewayHelloOk | null;
+   lastError: string | null;
+-  lastErrorCode: string | null;
+   eventLog: EventLogEntry[];
+   assistantName: string;
+   assistantAvatar: string | null;
+@@ -61,7 +61,6 @@ export type AppViewState = {
+   chatStreamStartedAt: number | null;
+   chatRunId: string | null;
+   compactionStatus: CompactionStatus | null;
+-  fallbackStatus: FallbackStatus | null;
+   chatAvatarUrl: string | null;
+   chatThinkingLevel: string | null;
+   chatQueue: ChatQueueItem[];
+@@ -128,10 +127,9 @@ export type AppViewState = {
+   agentsList: AgentsListResult | null;
+   agentsError: string | null;
+   agentsSelectedId: string | null;
+-  toolsCatalogLoading: boolean;
+-  toolsCatalogError: string | null;
+-  toolsCatalogResult: ToolsCatalogResult | null;
+   agentsPanel: "overview" | "files" | "tools" | "skills" | "channels" | "cron";
++  agentsModelKeyError: string | null;
++  agentsModelKeyModalError: string | null;
+   agentFilesLoading: boolean;
+   agentFilesError: string | null;
+   agentFilesList: AgentsFilesListResult | null;
+@@ -153,7 +151,6 @@ export type AppViewState = {
+   sessionsFilterLimit: string;
+   sessionsIncludeGlobal: boolean;
+   sessionsIncludeUnknown: boolean;
+-  sessionsHideCron: boolean;
+   usageLoading: boolean;
+   usageResult: SessionsUsageResult | null;
+   usageCostSummary: CostUsageSummary | null;
+@@ -189,133 +186,104 @@ export type AppViewState = {
+   usageLogFilterTools: string[];
+   usageLogFilterHasTools: boolean;
+   usageLogFilterQuery: string;
+-} & Pick<
+-  CronState,
+-  | "cronLoading"
+-  | "cronJobsLoadingMore"
+-  | "cronJobs"
+-  | "cronJobsTotal"
+-  | "cronJobsHasMore"
+-  | "cronJobsNextOffset"
+-  | "cronJobsLimit"
+-  | "cronJobsQuery"
+-  | "cronJobsEnabledFilter"
+-  | "cronJobsScheduleKindFilter"
+-  | "cronJobsLastStatusFilter"
+-  | "cronJobsSortBy"
+-  | "cronJobsSortDir"
+-  | "cronStatus"
+-  | "cronError"
+-  | "cronForm"
+-  | "cronFieldErrors"
+-  | "cronEditingJobId"
+-  | "cronRunsJobId"
+-  | "cronRunsLoadingMore"
+-  | "cronRuns"
+-  | "cronRunsTotal"
+-  | "cronRunsHasMore"
+-  | "cronRunsNextOffset"
+-  | "cronRunsLimit"
+-  | "cronRunsScope"
+-  | "cronRunsStatuses"
+-  | "cronRunsDeliveryStatuses"
+-  | "cronRunsStatusFilter"
+-  | "cronRunsQuery"
+-  | "cronRunsSortDir"
+-  | "cronBusy"
+-> &
+-  Pick<CronModelSuggestionsState, "cronModelSuggestions"> & {
+-    skillsLoading: boolean;
+-    skillsReport: SkillStatusReport | null;
+-    skillsError: string | null;
+-    skillsFilter: string;
+-    skillEdits: Record<string, string>;
+-    skillMessages: Record<string, SkillMessage>;
+-    skillsBusyKey: string | null;
+-    debugLoading: boolean;
+-    debugStatus: StatusSummary | null;
+-    debugHealth: HealthSnapshot | null;
+-    debugModels: unknown[];
+-    debugHeartbeat: unknown;
+-    debugCallMethod: string;
+-    debugCallParams: string;
+-    debugCallResult: string | null;
+-    debugCallError: string | null;
+-    logsLoading: boolean;
+-    logsError: string | null;
+-    logsFile: string | null;
+-    logsEntries: LogEntry[];
+-    logsFilterText: string;
+-    logsLevelFilters: Record<LogLevel, boolean>;
+-    logsAutoFollow: boolean;
+-    logsTruncated: boolean;
+-    logsCursor: number | null;
+-    logsLastFetchAt: number | null;
+-    logsLimit: number;
+-    logsMaxBytes: number;
+-    logsAtBottom: boolean;
+-    updateAvailable: import("./types.js").UpdateAvailable | null;
+-    client: GatewayBrowserClient | null;
+-    refreshSessionsAfterChat: Set<string>;
+-    connect: () => void;
+-    setTab: (tab: Tab) => void;
+-    setTheme: (theme: ThemeMode, context?: ThemeTransitionContext) => void;
+-    applySettings: (next: UiSettings) => void;
+-    loadOverview: () => Promise<void>;
+-    loadAssistantIdentity: () => Promise<void>;
+-    loadCron: () => Promise<void>;
+-    handleWhatsAppStart: (force: boolean) => Promise<void>;
+-    handleWhatsAppWait: () => Promise<void>;
+-    handleWhatsAppLogout: () => Promise<void>;
+-    handleChannelConfigSave: () => Promise<void>;
+-    handleChannelConfigReload: () => Promise<void>;
+-    handleNostrProfileEdit: (accountId: string, profile: NostrProfile | null) => void;
+-    handleNostrProfileCancel: () => void;
+-    handleNostrProfileFieldChange: (field: keyof NostrProfile, value: string) => void;
+-    handleNostrProfileSave: () => Promise<void>;
+-    handleNostrProfileImport: () => Promise<void>;
+-    handleNostrProfileToggleAdvanced: () => void;
+-    handleExecApprovalDecision: (decision: "allow-once" | "allow-always" | "deny") => Promise<void>;
+-    handleGatewayUrlConfirm: () => void;
+-    handleGatewayUrlCancel: () => void;
+-    handleConfigLoad: () => Promise<void>;
+-    handleConfigSave: () => Promise<void>;
+-    handleConfigApply: () => Promise<void>;
+-    handleConfigFormUpdate: (path: string, value: unknown) => void;
+-    handleConfigFormModeChange: (mode: "form" | "raw") => void;
+-    handleConfigRawChange: (raw: string) => void;
+-    handleInstallSkill: (key: string) => Promise<void>;
+-    handleUpdateSkill: (key: string) => Promise<void>;
+-    handleToggleSkillEnabled: (key: string, enabled: boolean) => Promise<void>;
+-    handleUpdateSkillEdit: (key: string, value: string) => void;
+-    handleSaveSkillApiKey: (key: string, apiKey: string) => Promise<void>;
+-    handleCronToggle: (jobId: string, enabled: boolean) => Promise<void>;
+-    handleCronRun: (jobId: string) => Promise<void>;
+-    handleCronRemove: (jobId: string) => Promise<void>;
+-    handleCronAdd: () => Promise<void>;
+-    handleCronRunsLoad: (jobId: string) => Promise<void>;
+-    handleCronFormUpdate: (path: string, value: unknown) => void;
+-    handleSessionsLoad: () => Promise<void>;
+-    handleSessionsPatch: (key: string, patch: unknown) => Promise<void>;
+-    handleLoadNodes: () => Promise<void>;
+-    handleLoadPresence: () => Promise<void>;
+-    handleLoadSkills: () => Promise<void>;
+-    handleLoadDebug: () => Promise<void>;
+-    handleLoadLogs: () => Promise<void>;
+-    handleDebugCall: () => Promise<void>;
+-    handleRunUpdate: () => Promise<void>;
+-    setPassword: (next: string) => void;
+-    setSessionKey: (next: string) => void;
+-    setChatMessage: (next: string) => void;
+-    handleSendChat: (messageOverride?: string, opts?: { restoreDraft?: boolean }) => Promise<void>;
+-    handleAbortChat: () => Promise<void>;
+-    removeQueuedMessage: (id: string) => void;
+-    handleChatScroll: (event: Event) => void;
+-    resetToolStream: () => void;
+-    resetChatScroll: () => void;
+-    exportLogs: (lines: string[], label: string) => void;
+-    handleLogsScroll: (event: Event) => void;
+-    handleOpenSidebar: (content: string) => void;
+-    handleCloseSidebar: () => void;
+-    handleSplitRatioChange: (ratio: number) => void;
+-  };
++  cronLoading: boolean;
++  cronJobs: CronJob[];
++  cronStatus: CronStatus | null;
++  cronError: string | null;
++  cronForm: CronFormState;
++  cronRunsJobId: string | null;
++  cronRuns: CronRunLogEntry[];
++  cronBusy: boolean;
++  skillsLoading: boolean;
++  skillsReport: SkillStatusReport | null;
++  skillsError: string | null;
++  skillsFilter: string;
++  skillEdits: Record<string, string>;
++  skillMessages: Record<string, SkillMessage>;
++  skillsBusyKey: string | null;
++  debugLoading: boolean;
++  debugStatus: StatusSummary | null;
++  debugHealth: HealthSnapshot | null;
++  debugModels: unknown[];
++  debugHeartbeat: unknown;
++  debugCallMethod: string;
++  debugCallParams: string;
++  debugCallResult: string | null;
++  debugCallError: string | null;
++  logsLoading: boolean;
++  logsError: string | null;
++  logsFile: string | null;
++  logsEntries: LogEntry[];
++  logsFilterText: string;
++  logsLevelFilters: Record<LogLevel, boolean>;
++  logsAutoFollow: boolean;
++  logsTruncated: boolean;
++  logsCursor: number | null;
++  logsLastFetchAt: number | null;
++  logsLimit: number;
++  logsMaxBytes: number;
++  logsAtBottom: boolean;
++  client: GatewayBrowserClient | null;
++  refreshSessionsAfterChat: Set<string>;
++  connect: () => void;
++  setTab: (tab: Tab) => void;
++  setTheme: (theme: ThemeMode, context?: ThemeTransitionContext) => void;
++  applySettings: (next: UiSettings) => void;
++  loadOverview: () => Promise<void>;
++  loadAssistantIdentity: () => Promise<void>;
++  loadCron: () => Promise<void>;
++  handleWhatsAppStart: (force: boolean) => Promise<void>;
++  handleWhatsAppWait: () => Promise<void>;
++  handleWhatsAppLogout: () => Promise<void>;
++  handleChannelConfigSave: () => Promise<void>;
++  handleChannelConfigReload: () => Promise<void>;
++  handleNostrProfileEdit: (accountId: string, profile: NostrProfile | null) => void;
++  handleNostrProfileCancel: () => void;
++  handleNostrProfileFieldChange: (field: keyof NostrProfile, value: string) => void;
++  handleNostrProfileSave: () => Promise<void>;
++  handleNostrProfileImport: () => Promise<void>;
++  handleNostrProfileToggleAdvanced: () => void;
++  handleExecApprovalDecision: (decision: "allow-once" | "allow-always" | "deny") => Promise<void>;
++  handleGatewayUrlConfirm: () => void;
++  handleGatewayUrlCancel: () => void;
++  handleConfigLoad: () => Promise<void>;
++  handleConfigSave: () => Promise<void>;
++  handleConfigApply: () => Promise<void>;
++  handleConfigFormUpdate: (path: string, value: unknown) => void;
++  handleConfigFormModeChange: (mode: "form" | "raw") => void;
++  handleConfigRawChange: (raw: string) => void;
++  handleInstallSkill: (key: string) => Promise<void>;
++  handleUpdateSkill: (key: string) => Promise<void>;
++  handleToggleSkillEnabled: (key: string, enabled: boolean) => Promise<void>;
++  handleUpdateSkillEdit: (key: string, value: string) => void;
++  handleSaveSkillApiKey: (key: string, apiKey: string) => Promise<void>;
++  handleCronToggle: (jobId: string, enabled: boolean) => Promise<void>;
++  handleCronRun: (jobId: string) => Promise<void>;
++  handleCronRemove: (jobId: string) => Promise<void>;
++  handleCronAdd: () => Promise<void>;
++  handleCronRunsLoad: (jobId: string) => Promise<void>;
++  handleCronFormUpdate: (path: string, value: unknown) => void;
++  handleSessionsLoad: () => Promise<void>;
++  handleSessionsPatch: (key: string, patch: unknown) => Promise<void>;
++  handleLoadNodes: () => Promise<void>;
++  handleLoadPresence: () => Promise<void>;
++  handleLoadSkills: () => Promise<void>;
++  handleLoadDebug: () => Promise<void>;
++  handleLoadLogs: () => Promise<void>;
++  handleDebugCall: () => Promise<void>;
++  handleRunUpdate: () => Promise<void>;
++  setPassword: (next: string) => void;
++  setSessionKey: (next: string) => void;
++  setChatMessage: (next: string) => void;
++  handleSendChat: (messageOverride?: string, opts?: { restoreDraft?: boolean }) => Promise<void>;
++  handleAbortChat: () => Promise<void>;
++  removeQueuedMessage: (id: string) => void;
++  handleChatScroll: (event: Event) => void;
++  resetToolStream: () => void;
++  resetChatScroll: () => void;
++  exportLogs: (lines: string[], label: string) => void;
++  handleLogsScroll: (event: Event) => void;
++  handleOpenSidebar: (content: string) => void;
++  handleCloseSidebar: () => void;
++  handleSplitRatioChange: (ratio: number) => void;
++};
+diff --git a/ui/src/ui/app.ts b/ui/src/ui/app.ts
+index 3b50922bd..6e1afa523 100644
+--- a/ui/src/ui/app.ts
++++ b/ui/src/ui/app.ts
+@@ -48,12 +48,10 @@ import {
+   resetToolStream as resetToolStreamInternal,
+   type ToolStreamEntry,
+   type CompactionStatus,
+-  type FallbackStatus,
+ } from "./app-tool-stream.ts";
+ import type { AppViewState } from "./app-view-state.ts";
+ import { normalizeAssistantIdentity } from "./assistant-identity.ts";
+ import { loadAssistantIdentity as loadAssistantIdentityInternal } from "./controllers/assistant-identity.ts";
+-import type { CronFieldErrors } from "./controllers/cron.ts";
+ import type { DevicePairingList } from "./controllers/devices.ts";
+ import type { ExecApprovalRequest } from "./controllers/exec-approval.ts";
+ import type { ExecApprovalsFile, ExecApprovalsSnapshot } from "./controllers/exec-approvals.ts";
+@@ -78,12 +76,10 @@ import type {
+   ChannelsStatusSnapshot,
+   SessionsListResult,
+   SkillStatusReport,
+-  ToolsCatalogResult,
+   StatusSummary,
+   NostrProfile,
+ } from "./types.ts";
+ import { type ChatAttachment, type ChatQueueItem, type CronFormState } from "./ui-types.ts";
+-import { generateUUID } from "./uuid.ts";
+ import type { NostrProfileFormState } from "./views/channels.nostr-profile-form.ts";
+ 
+ declare global {
+@@ -110,7 +106,6 @@ function resolveOnboardingMode(): boolean {
+ @customElement("openclaw-app")
+ export class OpenClawApp extends LitElement {
+   private i18nController = new I18nController(this);
+-  clientInstanceId = generateUUID();
+   @state() settings: UiSettings = loadSettings();
+   constructor() {
+     super();
+@@ -126,7 +121,6 @@ export class OpenClawApp extends LitElement {
+   @state() themeResolved: ResolvedTheme = "dark";
+   @state() hello: GatewayHelloOk | null = null;
+   @state() lastError: string | null = null;
+-  @state() lastErrorCode: string | null = null;
+   @state() eventLog: EventLogEntry[] = [];
+   private eventLogBuffer: EventLogEntry[] = [];
+   private toolStreamSyncTimer: number | null = null;
+@@ -146,7 +140,6 @@ export class OpenClawApp extends LitElement {
+   @state() chatStreamStartedAt: number | null = null;
+   @state() chatRunId: string | null = null;
+   @state() compactionStatus: CompactionStatus | null = null;
+-  @state() fallbackStatus: FallbackStatus | null = null;
+   @state() chatAvatarUrl: string | null = null;
+   @state() chatThinkingLevel: string | null = null;
+   @state() chatQueue: ChatQueueItem[] = [];
+@@ -218,11 +211,10 @@ export class OpenClawApp extends LitElement {
+   @state() agentsList: AgentsListResult | null = null;
+   @state() agentsError: string | null = null;
+   @state() agentsSelectedId: string | null = null;
+-  @state() toolsCatalogLoading = false;
+-  @state() toolsCatalogError: string | null = null;
+-  @state() toolsCatalogResult: ToolsCatalogResult | null = null;
+   @state() agentsPanel: "overview" | "files" | "tools" | "skills" | "channels" | "cron" =
+     "overview";
++  @state() agentsModelKeyError: string | null = null;
++  @state() agentsModelKeyModalError: string | null = null;
+   @state() agentFilesLoading = false;
+   @state() agentFilesError: string | null = null;
+   @state() agentFilesList: AgentsFilesListResult | null = null;
+@@ -245,7 +237,6 @@ export class OpenClawApp extends LitElement {
+   @state() sessionsFilterLimit = "120";
+   @state() sessionsIncludeGlobal = true;
+   @state() sessionsIncludeUnknown = false;
+-  @state() sessionsHideCron = true;
+ 
+   @state() usageLoading = false;
+   @state() usageResult: import("./types.js").SessionsUsageResult | null = null;
+@@ -303,43 +294,14 @@ export class OpenClawApp extends LitElement {
+   usageQueryDebounceTimer: number | null = null;
+ 
+   @state() cronLoading = false;
+-  @state() cronJobsLoadingMore = false;
+   @state() cronJobs: CronJob[] = [];
+-  @state() cronJobsTotal = 0;
+-  @state() cronJobsHasMore = false;
+-  @state() cronJobsNextOffset: number | null = null;
+-  @state() cronJobsLimit = 50;
+-  @state() cronJobsQuery = "";
+-  @state() cronJobsEnabledFilter: import("./types.js").CronJobsEnabledFilter = "all";
+-  @state() cronJobsScheduleKindFilter: import("./controllers/cron.js").CronJobsScheduleKindFilter =
+-    "all";
+-  @state() cronJobsLastStatusFilter: import("./controllers/cron.js").CronJobsLastStatusFilter =
+-    "all";
+-  @state() cronJobsSortBy: import("./types.js").CronJobsSortBy = "nextRunAtMs";
+-  @state() cronJobsSortDir: import("./types.js").CronSortDir = "asc";
+   @state() cronStatus: CronStatus | null = null;
+   @state() cronError: string | null = null;
+   @state() cronForm: CronFormState = { ...DEFAULT_CRON_FORM };
+-  @state() cronFieldErrors: CronFieldErrors = {};
+-  @state() cronEditingJobId: string | null = null;
+   @state() cronRunsJobId: string | null = null;
+-  @state() cronRunsLoadingMore = false;
+   @state() cronRuns: CronRunLogEntry[] = [];
+-  @state() cronRunsTotal = 0;
+-  @state() cronRunsHasMore = false;
+-  @state() cronRunsNextOffset: number | null = null;
+-  @state() cronRunsLimit = 50;
+-  @state() cronRunsScope: import("./types.js").CronRunScope = "all";
+-  @state() cronRunsStatuses: import("./types.js").CronRunsStatusValue[] = [];
+-  @state() cronRunsDeliveryStatuses: import("./types.js").CronDeliveryStatus[] = [];
+-  @state() cronRunsStatusFilter: import("./types.js").CronRunsStatusFilter = "all";
+-  @state() cronRunsQuery = "";
+-  @state() cronRunsSortDir: import("./types.js").CronSortDir = "desc";
+-  @state() cronModelSuggestions: string[] = [];
+   @state() cronBusy = false;
+ 
+-  @state() updateAvailable: import("./types.js").UpdateAvailable | null = null;
+-
+   @state() skillsLoading = false;
+   @state() skillsReport: SkillStatusReport | null = null;
+   @state() skillsError: string | null = null;
+diff --git a/ui/src/ui/components/modal.ts b/ui/src/ui/components/modal.ts
+new file mode 100644
+index 000000000..fd544f42c
+--- /dev/null
++++ b/ui/src/ui/components/modal.ts
+@@ -0,0 +1,37 @@
++import { html, nothing } from "lit";
++import type { AppViewState } from "../app-view-state.ts";
++
++/** Renders API key warning modal on Agents tab when agentsModelKeyModalError is set (Scenario 1: tab open). */
++export function renderApiKeyModal(state: AppViewState) {
++  if (state.tab !== "agents" || !state.agentsModelKeyModalError) {
++    return nothing;
++  }
++  const m = state.agentsModelKeyModalError;
++  const provider = m.match(/"([^"]+)"/)?.[1] ?? "unknown";
++  return html`
++    <div class="api-key-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="api-key-modal-title" aria-live="polite">
++      <div class="api-key-modal-card">
++        <div class="api-key-modal-header">
++          <span class="api-key-modal-title" id="api-key-modal-title">⚠️ API Key Invalid</span>
++          <button
++            class="api-key-modal-close"
++            aria-label="Dismiss"
++            @click=${() => (state.agentsModelKeyModalError = null)}
++          >✕</button>
++        </div>
++        <div class="api-key-modal-body">
++          <p>${m}</p>
++          <p class="api-key-modal-hint">
++            Fix: update <strong>${provider}</strong> key in
++            <code>auth-profiles.json</code> → <code>${provider}:default</code>
++          </p>
++        </div>
++        <div class="api-key-modal-actions">
++          <button class="btn primary" @click=${() => (state.agentsModelKeyModalError = null)}>
++            Dismiss
++          </button>
++        </div>
++      </div>
++    </div>
++  `;
++}
+diff --git a/ui/src/ui/markdown.ts b/ui/src/ui/markdown.ts
+index 1867b0eda..adcb74e7b 100644
+--- a/ui/src/ui/markdown.ts
++++ b/ui/src/ui/markdown.ts
+@@ -48,6 +48,8 @@ const MARKDOWN_CHAR_LIMIT = 140_000;
+ const MARKDOWN_PARSE_LIMIT = 40_000;
+ const MARKDOWN_CACHE_LIMIT = 200;
+ const MARKDOWN_CACHE_MAX_CHARS = 50_000;
++const MARKDOWN_MAX_LINE_LENGTH = 6_000;
++const MARKDOWN_BRACKET_PAIR_LIMIT = 1_500;
+ const markdownCache = new Map<string, string>();
+ 
+ function getCachedMarkdown(key: string): string | null {
+@@ -115,9 +117,32 @@ export function toSanitizedMarkdownHtml(markdown: string): string {
+     }
+     return sanitized;
+   }
+-  const rendered = marked.parse(`${truncated.text}${suffix}`, {
+-    renderer: htmlEscapeRenderer,
+-  }) as string;
++  const markdownText = `${truncated.text}${suffix}`;
++  if (isLikelyPathologicalMarkdown(markdownText)) {
++    const escaped = escapeHtml(markdownText);
++    const html = `<pre class="code-block">${escaped}</pre>`;
++    const sanitized = DOMPurify.sanitize(html, sanitizeOptions);
++    if (input.length <= MARKDOWN_CACHE_MAX_CHARS) {
++      setCachedMarkdown(input, sanitized);
++    }
++    return sanitized;
++  }
++
++  let rendered = "";
++  try {
++    rendered = marked.parse(markdownText, {
++      renderer: htmlEscapeRenderer,
++    }) as string;
++  } catch {
++    const escaped = escapeHtml(markdownText);
++    const html = `<pre class="code-block">${escaped}</pre>`;
++    const sanitized = DOMPurify.sanitize(html, sanitizeOptions);
++    if (input.length <= MARKDOWN_CACHE_MAX_CHARS) {
++      setCachedMarkdown(input, sanitized);
++    }
++    return sanitized;
++  }
++
+   const sanitized = DOMPurify.sanitize(rendered, sanitizeOptions);
+   if (input.length <= MARKDOWN_CACHE_MAX_CHARS) {
+     setCachedMarkdown(input, sanitized);
+@@ -125,6 +150,25 @@ export function toSanitizedMarkdownHtml(markdown: string): string {
+   return sanitized;
+ }
+ 
++function isLikelyPathologicalMarkdown(value: string): boolean {
++  if (!value) {
++    return false;
++  }
++  const lines = value.split("\n");
++  for (const line of lines) {
++    if (line.length > MARKDOWN_MAX_LINE_LENGTH) {
++      return true;
++    }
++  }
++  const openBrackets = (value.match(/\[/g) || []).length;
++  const closeBrackets = (value.match(/\]/g) || []).length;
++  const openParens = (value.match(/\(/g) || []).length;
++  const closeParens = (value.match(/\)/g) || []).length;
++  const bracketPairs = Math.min(openBrackets, closeBrackets);
++  const parenPairs = Math.min(openParens, closeParens);
++  return bracketPairs > MARKDOWN_BRACKET_PAIR_LIMIT || parenPairs > MARKDOWN_BRACKET_PAIR_LIMIT;
++}
++
+ // Prevent raw HTML in chat messages from being rendered as formatted HTML.
+ // Display it as escaped text so users see the literal markup.
+ // Security is handled by DOMPurify, but rendering pasted HTML (e.g. error
+diff --git a/ui/src/ui/views/agents-utils.ts b/ui/src/ui/views/agents-utils.ts
+index 9c3f18c35..ceb8f8485 100644
+--- a/ui/src/ui/views/agents-utils.ts
++++ b/ui/src/ui/views/agents-utils.ts
+@@ -1,18 +1,101 @@
+ import { html } from "lit";
+-import {
+-  listCoreToolSections,
+-  PROFILE_OPTIONS as TOOL_PROFILE_OPTIONS,
+-} from "../../../../src/agents/tool-catalog.js";
+ import {
+   expandToolGroups,
+   normalizeToolName,
+   resolveToolProfilePolicy,
+-} from "../../../../src/agents/tool-policy-shared.js";
++} from "../../../../src/agents/tool-policy.js";
+ import type { AgentIdentityResult, AgentsFilesListResult, AgentsListResult } from "../types.ts";
+ 
+-export const TOOL_SECTIONS = listCoreToolSections();
+-
+-export const PROFILE_OPTIONS = TOOL_PROFILE_OPTIONS;
++export const TOOL_SECTIONS = [
++  {
++    id: "fs",
++    label: "Files",
++    tools: [
++      { id: "read", label: "read", description: "Read file contents" },
++      { id: "write", label: "write", description: "Create or overwrite files" },
++      { id: "edit", label: "edit", description: "Make precise edits" },
++      { id: "apply_patch", label: "apply_patch", description: "Patch files (OpenAI)" },
++    ],
++  },
++  {
++    id: "runtime",
++    label: "Runtime",
++    tools: [
++      { id: "exec", label: "exec", description: "Run shell commands" },
++      { id: "process", label: "process", description: "Manage background processes" },
++    ],
++  },
++  {
++    id: "web",
++    label: "Web",
++    tools: [
++      { id: "web_search", label: "web_search", description: "Search the web" },
++      { id: "web_fetch", label: "web_fetch", description: "Fetch web content" },
++    ],
++  },
++  {
++    id: "memory",
++    label: "Memory",
++    tools: [
++      { id: "memory_search", label: "memory_search", description: "Semantic search" },
++      { id: "memory_get", label: "memory_get", description: "Read memory files" },
++    ],
++  },
++  {
++    id: "sessions",
++    label: "Sessions",
++    tools: [
++      { id: "sessions_list", label: "sessions_list", description: "List sessions" },
++      { id: "sessions_history", label: "sessions_history", description: "Session history" },
++      { id: "sessions_send", label: "sessions_send", description: "Send to session" },
++      { id: "sessions_spawn", label: "sessions_spawn", description: "Spawn sub-agent" },
++      { id: "session_status", label: "session_status", description: "Session status" },
++    ],
++  },
++  {
++    id: "ui",
++    label: "UI",
++    tools: [
++      { id: "browser", label: "browser", description: "Control web browser" },
++      { id: "canvas", label: "canvas", description: "Control canvases" },
++    ],
++  },
++  {
++    id: "messaging",
++    label: "Messaging",
++    tools: [{ id: "message", label: "message", description: "Send messages" }],
++  },
++  {
++    id: "automation",
++    label: "Automation",
++    tools: [
++      { id: "cron", label: "cron", description: "Schedule tasks" },
++      { id: "gateway", label: "gateway", description: "Gateway control" },
++    ],
++  },
++  {
++    id: "nodes",
++    label: "Nodes",
++    tools: [{ id: "nodes", label: "nodes", description: "Nodes + devices" }],
++  },
++  {
++    id: "agents",
++    label: "Agents",
++    tools: [{ id: "agents_list", label: "agents_list", description: "List agents" }],
++  },
++  {
++    id: "media",
++    label: "Media",
++    tools: [{ id: "image", label: "image", description: "Image understanding" }],
++  },
++];
++
++export const PROFILE_OPTIONS = [
++  { id: "minimal", label: "Minimal" },
++  { id: "coding", label: "Coding" },
++  { id: "messaging", label: "Messaging" },
++  { id: "full", label: "Full" },
++] as const;
+ 
+ type ToolPolicy = {
+   allow?: string[];
+@@ -244,84 +327,6 @@ export function resolveModelFallbacks(model?: unknown): string[] | null {
+   return null;
+ }
+ 
+-export function resolveEffectiveModelFallbacks(
+-  entryModel?: unknown,
+-  defaultModel?: unknown,
+-): string[] | null {
+-  return resolveModelFallbacks(entryModel) ?? resolveModelFallbacks(defaultModel);
+-}
+-
+-function addModelId(target: Set<string>, value: unknown) {
+-  if (typeof value !== "string") {
+-    return;
+-  }
+-  const trimmed = value.trim();
+-  if (!trimmed) {
+-    return;
+-  }
+-  target.add(trimmed);
+-}
+-
+-function addModelConfigIds(target: Set<string>, modelConfig: unknown) {
+-  if (!modelConfig) {
+-    return;
+-  }
+-  if (typeof modelConfig === "string") {
+-    addModelId(target, modelConfig);
+-    return;
+-  }
+-  if (typeof modelConfig !== "object") {
+-    return;
+-  }
+-  const record = modelConfig as Record<string, unknown>;
+-  addModelId(target, record.primary);
+-  addModelId(target, record.model);
+-  addModelId(target, record.id);
+-  addModelId(target, record.value);
+-  const fallbacks = Array.isArray(record.fallbacks)
+-    ? record.fallbacks
+-    : Array.isArray(record.fallback)
+-      ? record.fallback
+-      : [];
+-  for (const fallback of fallbacks) {
+-    addModelId(target, fallback);
+-  }
+-}
+-
+-export function resolveConfiguredCronModelSuggestions(
+-  configForm: Record<string, unknown> | null,
+-): string[] {
+-  if (!configForm || typeof configForm !== "object") {
+-    return [];
+-  }
+-  const agents = (configForm as { agents?: unknown }).agents;
+-  if (!agents || typeof agents !== "object") {
+-    return [];
+-  }
+-  const out = new Set<string>();
+-  const defaults = (agents as { defaults?: unknown }).defaults;
+-  if (defaults && typeof defaults === "object") {
+-    const defaultsRecord = defaults as Record<string, unknown>;
+-    addModelConfigIds(out, defaultsRecord.model);
+-    const defaultsModels = defaultsRecord.models;
+-    if (defaultsModels && typeof defaultsModels === "object") {
+-      for (const modelId of Object.keys(defaultsModels as Record<string, unknown>)) {
+-        addModelId(out, modelId);
+-      }
+-    }
+-  }
+-  const list = (agents as { list?: unknown }).list;
+-  if (list && typeof list === "object") {
+-    for (const entry of Object.values(list as Record<string, unknown>)) {
+-      if (!entry || typeof entry !== "object") {
+-        continue;
+-      }
+-      addModelConfigIds(out, (entry as Record<string, unknown>).model);
+-    }
+-  }
+-  return [...out].toSorted((a, b) => a.localeCompare(b));
+-}
+-
+ export function parseFallbackList(value: string): string[] {
+   return value
+     .split(",")
+@@ -363,18 +368,33 @@ function resolveConfiguredModels(
+ export function buildModelOptions(
+   configForm: Record<string, unknown> | null,
+   current?: string | null,
++  invalidProviders?: Set<string>,
+ ) {
+   const options = resolveConfiguredModels(configForm);
+-  const hasCurrent = current ? options.some((option) => option.value === current) : false;
+-  if (current && !hasCurrent) {
+-    options.unshift({ value: current, label: `Current (${current})` });
++  // If current model is not in configured list, prepend it as-is
++  if (current && !options.some((o) => o.value === current)) {
++    options.unshift({ value: current, label: current });
+   }
+   if (options.length === 0) {
+-    return html`
+-      <option value="" disabled>No configured models</option>
+-    `;
+-  }
+-  return options.map((option) => html`<option value=${option.value}>${option.label}</option>`);
++    return html`<option value="" disabled>No configured models</option>`;
++  }
++  // Active model first, rest sorted alphabetically
++  const sorted = current
++    ? [
++        ...options.filter((o) => o.value === current),
++        ...options.filter((o) => o.value !== current).sort((a, b) => a.label.localeCompare(b.label)),
++      ]
++    : options;
++  return sorted.map((option) => {
++    const isActive = option.value === current;
++    const provider = option.value.split("/")[0];
++    const isInvalid = invalidProviders?.has(provider) ?? false;
++    const prefix = isInvalid ? "❌ " : "";
++    const suffix = isActive ? " ← current" : "";
++    return html`<option value=${option.value} style=${isActive ? "font-weight:bold" : ""}
++      >${`${prefix}${option.label}${suffix}`}</option
++    >`;
++  });
+ }
+ 
+ type CompiledPattern =
+diff --git a/ui/src/ui/views/agents.ts b/ui/src/ui/views/agents.ts
+index 891190d9a..70a5813bb 100644
+--- a/ui/src/ui/views/agents.ts
++++ b/ui/src/ui/views/agents.ts
+@@ -7,7 +7,6 @@ import type {
+   CronJob,
+   CronStatus,
+   SkillStatusReport,
+-  ToolsCatalogResult,
+ } from "../types.ts";
+ import {
+   renderAgentFiles,
+@@ -24,7 +23,7 @@ import {
+   parseFallbackList,
+   resolveAgentConfig,
+   resolveAgentEmoji,
+-  resolveEffectiveModelFallbacks,
++  resolveModelFallbacks,
+   resolveModelLabel,
+   resolveModelPrimary,
+ } from "./agents-utils.ts";
+@@ -63,10 +62,8 @@ export type AgentsProps = {
+   agentSkillsReport: SkillStatusReport | null;
+   agentSkillsError: string | null;
+   agentSkillsAgentId: string | null;
+-  toolsCatalogLoading: boolean;
+-  toolsCatalogError: string | null;
+-  toolsCatalogResult: ToolsCatalogResult | null;
+   skillsFilter: string;
++  modelKeyError: string | null;
+   onRefresh: () => void;
+   onSelectAgent: (agentId: string) => void;
+   onSelectPanel: (panel: AgentsPanel) => void;
+@@ -180,6 +177,7 @@ export function renderAgents(props: AgentsProps) {
+                         configLoading: props.configLoading,
+                         configSaving: props.configSaving,
+                         configDirty: props.configDirty,
++                        modelKeyError: props.modelKeyError,
+                         onConfigReload: props.onConfigReload,
+                         onConfigSave: props.onConfigSave,
+                         onModelChange: props.onModelChange,
+@@ -214,9 +212,6 @@ export function renderAgents(props: AgentsProps) {
+                         configLoading: props.configLoading,
+                         configSaving: props.configSaving,
+                         configDirty: props.configDirty,
+-                        toolsCatalogLoading: props.toolsCatalogLoading,
+-                        toolsCatalogError: props.toolsCatalogError,
+-                        toolsCatalogResult: props.toolsCatalogResult,
+                         onProfileChange: props.onToolsProfileChange,
+                         onOverridesChange: props.onToolsOverridesChange,
+                         onConfigReload: props.onConfigReload,
+@@ -355,6 +350,7 @@ function renderAgentOverview(params: {
+   configLoading: boolean;
+   configSaving: boolean;
+   configDirty: boolean;
++  modelKeyError: string | null;
+   onConfigReload: () => void;
+   onConfigSave: () => void;
+   onModelChange: (agentId: string, modelId: string | null) => void;
+@@ -370,6 +366,7 @@ function renderAgentOverview(params: {
+     configLoading,
+     configSaving,
+     configDirty,
++    modelKeyError,
+     onConfigReload,
+     onConfigSave,
+     onModelChange,
+@@ -390,10 +387,7 @@ function renderAgentOverview(params: {
+     resolveModelPrimary(config.defaults?.model) ||
+     (defaultModel !== "-" ? normalizeModelValue(defaultModel) : null);
+   const effectivePrimary = modelPrimary ?? defaultPrimary ?? null;
+-  const modelFallbacks = resolveEffectiveModelFallbacks(
+-    config.entry?.model,
+-    config.defaults?.model,
+-  );
++  const modelFallbacks = resolveModelFallbacks(config.entry?.model ?? config.defaults?.model);
+   const fallbackText = modelFallbacks ? modelFallbacks.join(", ") : "";
+   const identityName =
+     agentIdentity?.name?.trim() ||
+@@ -464,7 +458,7 @@ function renderAgentOverview(params: {
+                       </option>
+                     `
+               }
+-              ${buildModelOptions(configForm, effectivePrimary ?? undefined)}
++              ${buildModelOptions(configForm, effectivePrimary ?? undefined, modelKeyError ? new Set([modelKeyError.match(/"([^"]+)"/)?.[1]].filter((p): p is string => Boolean(p))) : undefined)}
+             </select>
+           </label>
+           <label class="field" style="min-width: 260px; flex: 1;">
+@@ -481,6 +475,7 @@ function renderAgentOverview(params: {
+             />
+           </label>
+         </div>
++        ${modelKeyError ? html`<div class="callout danger" style="margin-top: 8px;">${modelKeyError}</div>` : nothing}
+         <div class="row" style="justify-content: flex-end; gap: 8px;">
+           <button class="btn btn--sm" ?disabled=${configLoading} @click=${onConfigReload}>
+             Reload Config
+diff --git a/ui/src/ui/views/sessions.ts b/ui/src/ui/views/sessions.ts
+index 6f0332f62..0189b9a95 100644
+--- a/ui/src/ui/views/sessions.ts
++++ b/ui/src/ui/views/sessions.ts
+@@ -114,11 +114,19 @@ export function renderSessions(props: SessionsProps) {
+       <div class="row" style="justify-content: space-between;">
+         <div>
+           <div class="card-title">Sessions</div>
+-          <div class="card-sub">Active session keys and per-session overrides.</div>
++          <div class="card-sub">Inspect active sessions and adjust per-session defaults.</div>
++        </div>
++        <div style="display:flex;gap:8px;align-items:center;">
++          <a
++            href="/history"
++            target="_blank"
++            class="btn"
++            title="View archived session history"
++          >&#128220; History</a>
++          <button class="btn" ?disabled=${props.loading} @click=${props.onRefresh}>
++            ${props.loading ? "Loading…" : "Refresh"}
++          </button>
+         </div>
+-        <button class="btn" ?disabled=${props.loading} @click=${props.onRefresh}>
+-          ${props.loading ? "Loading…" : "Refresh"}
+-        </button>
+       </div>
+ 
+       <div class="filters" style="margin-top: 14px;">

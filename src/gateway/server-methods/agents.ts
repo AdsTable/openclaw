@@ -25,6 +25,7 @@ import {
   listAgentEntries,
   pruneAgentConfig,
 } from "../../commands/agents.config.js";
+import { resolveApiKeyForProvider } from "../../agents/model-auth.js";
 import { loadConfig, writeConfigFile } from "../../config/config.js";
 import { resolveSessionTranscriptsDirForAgent } from "../../config/sessions/paths.js";
 import { sameFileIdentity } from "../../infra/file-identity.js";
@@ -456,6 +457,23 @@ function respondWorkspaceFileMissing(params: {
 }
 
 export const agentsHandlers: GatewayRequestHandlers = {
+"agents.auth.check": async ({ params, respond }) => {
+  const provider = typeof params.provider === "string" ? params.provider.trim() : "";
+  if (!provider) {
+    respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "provider is required"));
+    return;
+  }
+  const cfg = loadConfig();
+  try {
+    const auth = await resolveApiKeyForProvider({ provider, cfg });
+    const valid = Boolean(
+      auth.apiKey || auth.mode === "oauth" || auth.mode === "token" || auth.mode === "aws-sdk",
+    );
+    respond(true, { valid, provider }, undefined);
+  } catch {
+    respond(true, { valid: false, provider }, undefined);
+  }
+},
   "agents.list": ({ params, respond }) => {
     if (!validateAgentsListParams(params)) {
       respond(
