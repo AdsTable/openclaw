@@ -458,7 +458,7 @@ function renderAgentOverview(params: {
                       </option>
                     `
               }
-              ${buildModelOptions(configForm, effectivePrimary ?? undefined, modelKeyError ? new Set([modelKeyError.match(/"([^"]+)"/)?.[1] ?? ""]) : undefined)}
+              ${buildModelOptions(configForm, effectivePrimary ?? undefined, modelKeyError ? new Set([modelKeyError.match(/"([^"]+)"/)?.[1]].filter((p): p is string => Boolean(p))) : undefined)}
             </select>
           </label>
           <label class="field" style="min-width: 260px; flex: 1;">

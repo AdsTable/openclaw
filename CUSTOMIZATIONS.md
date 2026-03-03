@@ -8,14 +8,13 @@
 
 | SHA | Description | Files |
 |-----|-------------|-------|
-| 2505155fe | Session history viewer at /history, History button in Sessions UI | `sessions.ts`, `control-ui.ts` |
-| 8db866cec | Guard markdown renderer against pathological inputs and parser timeout | `markdown.ts` |
-| da69ec013 | Agents: active model first+bold+arrow, auth check on load/change, fix model save for defaults | 8 files |
-| 1791c8141 | Agents: arrow direction left + add (current) label | `agents-utils.ts` |
-| 7c5e6871f | Agents: label format 'Name <- current' | `agents-utils.ts` |
-| a1fab3a3f | Agents: unicode arrow ← in current model label | `agents-utils.ts` |
+| 2505155fe | Session history viewer at /history, History button | `sessions.ts`, `control-ui.ts` |
+| 8db866cec | Guard markdown renderer against pathological inputs | `markdown.ts` |
+| da69ec013 | Agents: model save fix for defaults, auth check, bold+sort | 8 files |
 | 9c859da95 | Agents: show fallbacks from defaults when agent not in list | `agents.ts` |
-| 445982fe9 | Agents: API key warning modal + upstream merge script | `modal.ts`, `components.css`, `app-render.ts`, `merge-upstream.ps1` |
+| 445982fe9 | Agents: API key warning modal + upstream merge script | `modal.ts`, `components.css`, `app-render.ts` |
+| e8f36766c | Agents: split modal/callout into two states (no spam) | `app-settings.ts`, `modal.ts`, `app.ts`, `app-view-state.ts` |
+| 42e1fb0d7 | Agents: ❌ invalid provider marker in dropdown | `agents-utils.ts`, `agents.ts` |
 
 ## Changed Files Summary
 
@@ -39,10 +38,12 @@
 - `refreshActiveTab("agents")`: checks current model's API key validity on tab open (Scenario 1)
 
 ### 6. `ui/src/ui/app-view-state.ts`
-- Added `agentsModelKeyError: string | null`
+- Added `agentsModelKeyError: string | null` — inline callout (Scenario 2: model change)
+- Added `agentsModelKeyModalError: string | null` — modal overlay (Scenario 1: tab open)
 
 ### 7. `ui/src/ui/app.ts`
 - Added `@state() agentsModelKeyError: string | null = null`
+- Added `@state() agentsModelKeyModalError: string | null = null`
 
 ### 8. `ui/src/ui/markdown.ts`
 - Added `isLikelyPathologicalMarkdown()` guard
@@ -50,11 +51,19 @@
 - Wrapped `marked.parse()` in try/catch fallback
 
 ### 9. `ui/src/ui/views/agents-utils.ts`
-- `buildModelOptions()`: active model sorted FIRST, bold (`font-weight:bold`), label `Name ← current`
+- `buildModelOptions()`: active model sorted FIRST, `font-weight:bold`, label `Name ← current`
+- `invalidProviders?: Set<string>` param: prefixes invalid-key models with `❌`
+- Provider extracted from `agentsModelKeyError` (quotes regex `/"([^"]+)"/`)
+
+### 9a. `ui/src/ui/app-render.ts` key-check error messages (unified format)
+- All `agentsModelKeyError` messages use `"${provider}"` (quoted) so regex always matches
+- Scenario 2 (model change): `API key for "${provider}" is missing or invalid`
+- Scenario 2 (save block): `API key for "${provider}" is invalid or missing`
+- Scenario 2 (network fail): `Cannot verify API key for provider "${provider}"`
 
 ### 10. `ui/src/ui/views/agents.ts`
-- `renderAgentOverview`: added `modelKeyError` prop + callout display
-- `modelFallbacks`: fixed to use `config.entry?.model ?? config.defaults?.model`
+- `renderAgentOverview`: `modelKeyError` prop, inline callout, fallbacks fix
+- `buildModelOptions` call passes `invalidProviders` Set (filtered, no empty strings)
 
 ### 11. `ui/src/ui/views/sessions.ts`
 - Added "📜 History" button linking to `/history`

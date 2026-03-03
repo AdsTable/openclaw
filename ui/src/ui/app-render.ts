@@ -528,7 +528,7 @@ export function renderApp(state: AppViewState) {
                     try {
                       const res = await state.client.request<{ valid: boolean; provider: string }>("agents.auth.check", { provider });
                       if (!res.valid) {
-                        state.agentsModelKeyError = `API key for selected model (${provider}) is invalid or missing`;
+                        state.agentsModelKeyError = `API key for "${provider}" is invalid or missing`;
                         return;
                       }
                     } catch {
