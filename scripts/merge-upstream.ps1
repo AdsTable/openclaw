@@ -41,7 +41,13 @@ $date = Get-Date -Format "yyyyMMdd-HHmm"
 $patchFile = "docs/patches/customizations-$date.patch"
 New-Item -ItemType Directory -Path "docs/patches" -Force | Out-Null
 git diff upstream/main origin/main -- @($CustomFiles) | Out-File $patchFile -Encoding UTF8
-Write-Host "Patch saved: $patchFile" -ForegroundColor Green
+Write-Host "Patch saved: $patchFile ($((Get-Item $patchFile).Length) bytes)" -ForegroundColor Green
+
+if ($DryRun) {
+  Write-Host "`nDRY RUN complete. Patch saved for review. No branches created, no merge performed." -ForegroundColor Yellow
+  Write-Host "To apply patch after a future merge: git apply $patchFile" -ForegroundColor Yellow
+  exit 0
+}
 
 # Step 3: Create backup branch
 $backupBranch = "backup/pre-upstream-$date"
@@ -51,11 +57,6 @@ Write-Host "Backup branch pushed: $backupBranch" -ForegroundColor Green
 
 # Step 4: Return to main
 git checkout main
-
-if ($DryRun) {
-  Write-Host "`nDRY RUN: Would merge upstream/main. Run without -DryRun to proceed." -ForegroundColor Yellow
-  exit 0
-}
 
 # Step 5: Fetch and merge upstream
 Write-Host "`nFetching upstream..." -ForegroundColor Cyan
@@ -75,8 +76,9 @@ if ($mergeExitCode -ne 0) {
     }
   }
   Write-Host "`nWARNING: Custom files restored from origin/main." -ForegroundColor Yellow
-  Write-Host "Review conflicts in remaining files, then: git add . && git commit" -ForegroundColor Yellow
-  Write-Host "Then manually verify and re-apply custom changes per CUSTOMIZATIONS.md" -ForegroundColor Yellow
+  Write-Host "Review remaining conflicts: git diff --name-only --diff-filter=U" -ForegroundColor Yellow
+  Write-Host "To recover all custom changes: git apply $patchFile" -ForegroundColor Yellow
+  Write-Host "Then: git add . && git commit -m 'chore: merge upstream/main $date'" -ForegroundColor Yellow
 } else {
   Write-Host "Merge successful (no conflicts)." -ForegroundColor Green
 }
