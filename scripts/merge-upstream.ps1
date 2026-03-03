@@ -19,7 +19,9 @@ $CustomFiles = @(
   "ui/src/ui/components/modal.ts",
   "ui/src/ui/markdown.ts",
   "ui/src/ui/views/sessions.ts",
-  "src/gateway/control-ui.ts"
+  "ui/src/styles/components.css",
+  "src/gateway/control-ui.ts",
+  ".gitignore"
 )
 
 Write-Host "`n========================================" -ForegroundColor Cyan

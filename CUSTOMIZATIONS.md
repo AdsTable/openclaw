@@ -15,6 +15,7 @@
 | 445982fe9 | Agents: API key warning modal + upstream merge script | `modal.ts`, `components.css`, `app-render.ts` |
 | e8f36766c | Agents: split modal/callout into two states (no spam) | `app-settings.ts`, `modal.ts`, `app.ts`, `app-view-state.ts` |
 | 42e1fb0d7 | Agents: ❌ invalid provider marker in dropdown | `agents-utils.ts`, `agents.ts` |
+| b4fde200c | Fix: unify error format, guard empty provider Set, protect auth-profiles.json | `app-render.ts`, `agents.ts`, `.gitignore` |
 
 ## Changed Files Summary
 
