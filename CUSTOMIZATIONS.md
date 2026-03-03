@@ -56,11 +56,15 @@
 - `renderAgentOverview`: added `modelKeyError` prop + callout display
 - `modelFallbacks`: fixed to use `config.entry?.model ?? config.defaults?.model`
 
+### 11. `ui/src/ui/views/sessions.ts`
+- Added "📜 History" button linking to `/history`
+- Updated subtitle text
+
 ### 12. `ui/src/ui/components/modal.ts` *(new file)*
-- `renderApiKeyModal(state)`: modal overlay shown on Agents tab when `agentsModelKeyError` is set
-- Scenario 1 (tab open): modal + inline callout
-- Scenario 2 (model change): inline callout only (near Save button)
-- Dismiss button clears `state.agentsModelKeyError`
+- `renderApiKeyModal(state)`: modal overlay for **Scenario 1 only** (tab open) via `agentsModelKeyModalError`
+- **Scenario 1** (tab open): `agentsModelKeyModalError` → **Modal** (dismissable overlay)
+- **Scenario 2** (model change): `agentsModelKeyError` → **Inline callout** near Save button
+- Two separate states prevent modal spam on every model change
 
 ### 13. `ui/src/styles/components.css`
 - Added `.api-key-modal-*` CSS classes following `exec-approval` pattern

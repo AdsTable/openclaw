@@ -510,6 +510,7 @@ export function renderApp(state: AppViewState) {
                 },
                 onConfigReload: () => {
                   state.agentsModelKeyError = null;
+                  state.agentsModelKeyModalError = null;
                   loadConfig(state);
                 },
                 onConfigSave: async () => {
@@ -517,6 +518,7 @@ export function renderApp(state: AppViewState) {
                     return;
                   }
                   state.agentsModelKeyError = null;
+                  state.agentsModelKeyModalError = null;
                   const cfg = state.configForm as { agents?: { defaults?: { model?: unknown }; list?: Array<{ id?: string; model?: unknown }> } } | null;
                   const agentEntry = cfg?.agents?.list?.find((e) => e?.id === resolvedAgentId);
                   const rawModel = agentEntry?.model ?? cfg?.agents?.defaults?.model;

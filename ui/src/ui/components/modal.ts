@@ -1,12 +1,12 @@
 import { html, nothing } from "lit";
 import type { AppViewState } from "../app-view-state.ts";
 
-/** Renders API key warning modal on Agents tab when agentsModelKeyError is set. */
+/** Renders API key warning modal on Agents tab when agentsModelKeyModalError is set (Scenario 1: tab open). */
 export function renderApiKeyModal(state: AppViewState) {
-  if (state.tab !== "agents" || !state.agentsModelKeyError) {
+  if (state.tab !== "agents" || !state.agentsModelKeyModalError) {
     return nothing;
   }
-  const m = state.agentsModelKeyError;
+  const m = state.agentsModelKeyModalError;
   const provider = m.match(/"([^"]+)"/)?.[1] ?? "unknown";
   return html`
     <div class="api-key-modal-overlay" role="dialog" aria-modal="true">
@@ -16,7 +16,7 @@ export function renderApiKeyModal(state: AppViewState) {
           <button
             class="api-key-modal-close"
             aria-label="Dismiss"
-            @click=${() => (state.agentsModelKeyError = null)}
+            @click=${() => (state.agentsModelKeyModalError = null)}
           >✕</button>
         </div>
         <div class="api-key-modal-body">
@@ -27,7 +27,7 @@ export function renderApiKeyModal(state: AppViewState) {
           </p>
         </div>
         <div class="api-key-modal-actions">
-          <button class="btn primary" @click=${() => (state.agentsModelKeyError = null)}>
+          <button class="btn primary" @click=${() => (state.agentsModelKeyModalError = null)}>
             Dismiss
           </button>
         </div>

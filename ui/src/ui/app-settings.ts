@@ -227,12 +227,12 @@ export async function refreshActiveTab(host: SettingsHost) {
         typeof model === "string" ? model : (model as { primary?: string } | null)?.primary ?? null;
       const provider = primary ? primary.split("/")[0] : null;
       if (provider) {
-        app.agentsModelKeyError = null;
+        app.agentsModelKeyModalError = null;
         void app.client
           .request<{ valid: boolean; provider: string }>("agents.auth.check", { provider })
           .then((res) => {
             if (!res.valid) {
-              app.agentsModelKeyError = `API key for "${provider}" is missing or invalid`;
+              app.agentsModelKeyModalError = `API key for "${provider}" is missing or invalid`;
             }
           })
           .catch(() => {});

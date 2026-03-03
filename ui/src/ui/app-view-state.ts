@@ -129,6 +129,7 @@ export type AppViewState = {
   agentsSelectedId: string | null;
   agentsPanel: "overview" | "files" | "tools" | "skills" | "channels" | "cron";
   agentsModelKeyError: string | null;
+  agentsModelKeyModalError: string | null;
   agentFilesLoading: boolean;
   agentFilesError: string | null;
   agentFilesList: AgentsFilesListResult | null;
