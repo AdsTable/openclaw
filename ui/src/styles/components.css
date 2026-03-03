@@ -2154,7 +2154,7 @@
   border-radius: var(--radius-sm);
 }
 
-.api-key-modal-close:hover { background: var(--surface-hover); }
+.api-key-modal-close:hover { background: var(--bg-hover); }
 
 .api-key-modal-body { margin-bottom: 16px; line-height: 1.5; }
 

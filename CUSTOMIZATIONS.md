@@ -15,6 +15,7 @@
 | 7c5e6871f | Agents: label format 'Name <- current' | `agents-utils.ts` |
 | a1fab3a3f | Agents: unicode arrow ← in current model label | `agents-utils.ts` |
 | 9c859da95 | Agents: show fallbacks from defaults when agent not in list | `agents.ts` |
+| 445982fe9 | Agents: API key warning modal + upstream merge script | `modal.ts`, `components.css`, `app-render.ts`, `merge-upstream.ps1` |
 
 ## Changed Files Summary
 
@@ -55,9 +56,17 @@
 - `renderAgentOverview`: added `modelKeyError` prop + callout display
 - `modelFallbacks`: fixed to use `config.entry?.model ?? config.defaults?.model`
 
-### 11. `ui/src/ui/views/sessions.ts`
-- Added "📜 History" button linking to `/history`
-- Updated subtitle text
+### 12. `ui/src/ui/components/modal.ts` *(new file)*
+- `renderApiKeyModal(state)`: modal overlay shown on Agents tab when `agentsModelKeyError` is set
+- Scenario 1 (tab open): modal + inline callout
+- Scenario 2 (model change): inline callout only (near Save button)
+- Dismiss button clears `state.agentsModelKeyError`
+
+### 13. `ui/src/styles/components.css`
+- Added `.api-key-modal-*` CSS classes following `exec-approval` pattern
+
+### 14. `scripts/merge-upstream.ps1` *(new file)*
+- Safe upstream merge: backup branch → save patch → merge → auto-restore custom files on conflict → rebuild
 
 ## How to Merge Upstream Safely
 
