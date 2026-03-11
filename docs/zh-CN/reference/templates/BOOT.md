@@ -1,7 +1,7 @@
 ---
 read_when:
-  - 添加 BOOT.md 检查清单时
-summary: BOOT.md 的工作区模板
+  - When adding BOOT.md checklist
+summary: Workspace template for BOOT.md
 x-i18n:
   generated_at: "2026-02-01T21:37:16Z"
   model: claude-opus-4-5
@@ -13,5 +13,5 @@ x-i18n:
 
 # BOOT.md
 
-添加简短、明确的指令，说明 OpenClaw 在启动时应执行的操作（启用 `hooks.internal.enabled`）。
-如果任务需要发送消息，请使用消息工具，然后回复 NO_REPLY。
+Add short, clear instructions for what OpenClaw should do at startup (requires `hooks.internal.enabled`).
+If the task needs to send a message, use the message tool, then reply NO_REPLY.
