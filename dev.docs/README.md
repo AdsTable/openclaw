@@ -34,7 +34,7 @@ git apply --3way dev.docs/patches/customizations-LATEST.diff  # Fallback: apply 
 
 ### Build Commands
 ```bash
-npm run ui:build    # Vite UI bundle (REQUIRED after ui/src/ changes)
+pnpm run ui:build    # Vite UI bundle (REQUIRED after ui/src/ changes)
 npx tsdown          # Node.js gateway backend
 ```
 

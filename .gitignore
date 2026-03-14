@@ -126,3 +126,5 @@ dist/protocol.schema.json
 # Synthing
 **/.stfolder/
 .vs/
+# adstable.site research files accidentally placed here — content in adstable.site/skills/
+dev.docs/cshtml_skills_UI_UX_frontend/

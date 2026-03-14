@@ -79,41 +79,40 @@
 ### 13. `ui/src/styles/components.css`
 - Added `.api-key-modal-*` CSS classes following `exec-approval` pattern
 
-### 14. `scripts/merge-upstream.ps1` *(new file)*
-- Safe upstream merge: backup branch → save patch → merge → auto-restore custom files on conflict → rebuild
+### 14. `.githooks/post-merge`, `.githooks/pre-push`
+- Custom git hooks (safety gates). Added to $CustomFiles 2026-03-14.
 
-## How to Merge Upstream Safely
+### 15. `.gitleaks.toml`
+- Custom gitleaks config (API key detection rules). Added to $CustomFiles 2026-03-14.
 
-```bash
-# Step 1: Fetch upstream
-git fetch upstream
+### 16. `ui/src/ui/storage.ts`
+- Custom storage utilities. Added to $CustomFiles 2026-03-14.
 
-# Step 2: Create a backup branch before merge
-git checkout -b backup/before-upstream-merge-$(date +%Y%m%d)
-git push origin backup/before-upstream-merge-$(date +%Y%m%d)
+### 17. `ui/src/styles/base.css`
+- Base style overrides. Added to $CustomFiles 2026-03-14.
 
-# Step 3: Merge upstream into main
+### 18. `docs/zh-CN/reference/templates/*.md` (13 files)
+- Translated from zh-CN to English. Must be preserved on upstream merge.
+- Files: AGENTS.dev, AGENTS, BOOT, BOOTSTRAP, HEARTBEAT, IDENTITY.dev, IDENTITY, SOUL.dev, SOUL, TOOLS.dev, TOOLS, USER.dev, USER
+
+## How to Merge Upstream Safely (UPDATED 2026-03-14)
+
+```powershell
+# PREFERRED — automated with all safety checks:
+pwsh dev.docs/scripts/merge-upstream.ps1 -DryRun   # preview only
+pwsh dev.docs/scripts/merge-upstream.ps1            # full merge to temp branch
+# Then review and fast-forward main:
 git checkout main
-git merge upstream/main --no-ff -m "chore: merge upstream/main"
-
-# Step 4: If conflicts - our files ALWAYS WIN for these paths:
-# git checkout origin/main -- src/gateway/server-methods/agents.ts
-# git checkout origin/main -- src/gateway/server-methods-list.ts
-# git checkout origin/main -- ui/src/ui/app-render.ts
-# git checkout origin/main -- ui/src/ui/app-settings.ts
-# git checkout origin/main -- ui/src/ui/app-view-state.ts
-# git checkout origin/main -- ui/src/ui/app.ts
-# git checkout origin/main -- ui/src/ui/views/agents-utils.ts
-# git checkout origin/main -- ui/src/ui/views/agents.ts
-# Then manually re-apply our changes on top of upstream's version
-
-# Step 5: Rebuild
-npm run ui:build
-npx tsdown
-
-# Step 6: Push
+git merge --ff-only merge/upstream-YYYYMMDD-HHMM
 git push origin main
 ```
+
+## ⚠️ Custom File Protection Rules
+
+1. After any NEW customization: add the file to `$CustomFiles` in `dev.docs/scripts/merge-upstream.ps1`
+2. Also document it in Section "Changed Files Summary" above
+3. Run `pwsh dev.docs/scripts/merge-upstream.ps1 -DryRun` to verify patches save correctly
+
 
 ## External Config Files (NOT in git — must be backed up separately)
 
