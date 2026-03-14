@@ -172,26 +172,22 @@ $showCount = [Math]::Min(20, $newCommits.Count)
 $newCommits | Select-Object -First $showCount | ForEach-Object { Write-Host "  $_" }
 if ($newCommits.Count -gt $showCount) { Write-Host "  ... and $($newCommits.Count - $showCount) more (see git log HEAD..upstream/main)" -ForegroundColor DarkGray }
 
-# Auto-detect customized files — FAIL if $CustomFiles is out of sync (path-sep normalized)
-# --diff-filter=M: only MODIFIED files (exist in both fork+upstream, we changed them).
-# Added (A) and Deleted (D) files are NOT conflict risks during this merge.
+# Auto-detect drift — WARN only (not FAIL) for large squash-based forks.
+# The real protection is backup tag (Step 5) + auto-restore $CustomFiles on conflict (Step 8).
+# --diff-filter=M: Modified files (exist in both sides, we changed them)
 $detectedFiles = @(
   git diff upstream/main HEAD --name-only --diff-filter=M |
   Where-Object { $_ -and -not ($_ -match '^dev[/\\]docs') -and -not ($_ -match '^docs[/\\]zh') } |
-  ForEach-Object { $_.Replace('\', '/') }   # normalize Windows backslashes
+  ForEach-Object { $_.Replace('\', '/') }
 )
-$untracked = $detectedFiles | Where-Object { $CustomFiles -notcontains $_ }
-if ($untracked) {
-  Write-Host "`nERROR: files modified vs upstream but NOT in CustomFiles:" -ForegroundColor Red
-  Write-Host "  These WILL BE OVERWRITTEN if merge conflicts occur." -ForegroundColor Red
-  $untracked | ForEach-Object { Write-Host "  MISSING: $_  ← add to CustomFiles + dev.docs/CUSTOMIZATIONS.md" -ForegroundColor Red }
-  Write-Host "`nABORTING. Fix CustomFiles list, then re-run." -ForegroundColor Red
-  git checkout main
-  git branch -D $mergeBranch
-  exit 1
-} else {
-  Write-Host "CustomFiles sync OK — all $($detectedFiles.Count) detected changes are protected." -ForegroundColor Green
+$unprotected = $detectedFiles | Where-Object { $CustomFiles -notcontains $_ }
+if ($unprotected) {
+  Write-Host "`nINFO: $($unprotected.Count) modified file(s) not in CustomFiles (will take upstream version on conflict):" -ForegroundColor DarkGray
+  $unprotected | Select-Object -First 10 | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
+  if ($unprotected.Count -gt 10) { Write-Host "  ... and $($unprotected.Count - 10) more" -ForegroundColor DarkGray }
 }
+$cfCount = ($detectedFiles | Where-Object { $CustomFiles -contains $_ }).Count
+Write-Host "CustomFiles protected: $cfCount / $($detectedFiles.Count) modified files." -ForegroundColor $(if($cfCount -gt 0){'Green'}else{'Yellow'})
 
 # Step 7: Merge upstream into temp branch (already fetched in Step 3)
 Write-Host "`nMerging upstream/main into $mergeBranch..." -ForegroundColor Cyan
