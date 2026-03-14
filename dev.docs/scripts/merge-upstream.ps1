@@ -173,8 +173,10 @@ $newCommits | Select-Object -First $showCount | ForEach-Object { Write-Host "  $
 if ($newCommits.Count -gt $showCount) { Write-Host "  ... and $($newCommits.Count - $showCount) more (see git log HEAD..upstream/main)" -ForegroundColor DarkGray }
 
 # Auto-detect customized files — FAIL if $CustomFiles is out of sync (path-sep normalized)
+# --diff-filter=M: only MODIFIED files (exist in both fork+upstream, we changed them).
+# Added (A) and Deleted (D) files are NOT conflict risks during this merge.
 $detectedFiles = @(
-  git diff upstream/main HEAD --name-only |
+  git diff upstream/main HEAD --name-only --diff-filter=M |
   Where-Object { $_ -and -not ($_ -match '^dev[/\\]docs') -and -not ($_ -match '^docs[/\\]zh') } |
   ForEach-Object { $_.Replace('\', '/') }   # normalize Windows backslashes
 )
