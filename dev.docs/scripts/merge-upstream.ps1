@@ -226,10 +226,10 @@ Write-Host "`nVerifying custom files..." -ForegroundColor Cyan
 $verifyOk = Test-CustomFilesPresent -Files $CustomFiles
 
 # Step 9: Reproducible install + build + type-check
-Write-Host "`nInstalling dependencies (npm ci)..." -ForegroundColor Cyan
-npm ci
+Write-Host "`nInstalling dependencies (pnpm install --frozen-lockfile)..." -ForegroundColor Cyan
+pnpm install --frozen-lockfile
 if ($LASTEXITCODE -ne 0) {
-  Write-Host "ERROR: npm ci FAILED." -ForegroundColor Red
+  Write-Host "ERROR: pnpm install FAILED." -ForegroundColor Red
   Write-Host "Rollback: git checkout main; git branch -D $mergeBranch" -ForegroundColor Yellow
   exit 1
 }
