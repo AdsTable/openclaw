@@ -89,10 +89,13 @@
 - Custom gitleaks config (API key detection rules). Added to $CustomFiles 2026-03-14.
 
 ### 16. `ui/src/ui/storage.ts`
-- Custom storage utilities. Added to $CustomFiles 2026-03-14.
+- Simplified vs upstream: removed `LEGACY_TOKEN_SESSION_KEY`, `TOKEN_SESSION_KEY_PREFIX`, `PersistedUiSettings` type, `navWidth` field
+- `theme` field simplified from `ThemeName + ThemeMode` to `ThemeMode` only
+- Removed `parseThemeSelection` import dependency
 
 ### 17. `ui/src/styles/base.css`
-- Base style overrides. Added to $CustomFiles 2026-03-14.
+- Color palette customized: warmer dark theme (`--bg`, `--bg-accent`, `--bg-elevated`, `--bg-hover`, card/surface colors) replacing upstream's deep cold dark palette
+- All 78 CSS custom property values in `:root` have custom color values
 
 ### 18. `docs/zh-CN/reference/templates/*.md` (13 files)
 - Translated from zh-CN to English. Must be preserved on upstream merge.
