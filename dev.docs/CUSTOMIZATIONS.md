@@ -4,7 +4,10 @@
 > When merging upstream, these changes MUST be preserved or re-applied.
 > Upstream: https://github.com/openclaw/openclaw
 
-## Custom Commits (upstream/main..origin/main)
+> **STATUS (2026-03-14)**: Upstream merged — 2405 commits integrated into main.
+> 36 CustomFiles protected. All customizations verified present post-merge.
+
+## Custom Commits (our fork vs upstream)
 
 | SHA | Description | Files |
 |-----|-------------|-------|
@@ -99,19 +102,31 @@
 
 ```powershell
 # PREFERRED — automated with all safety checks:
-pwsh dev.docs/scripts/merge-upstream.ps1 -DryRun   # preview only
+pwsh dev.docs/scripts/merge-upstream.ps1 -DryRun   # preview only (fetches upstream, saves patches)
 pwsh dev.docs/scripts/merge-upstream.ps1            # full merge to temp branch
-# Then review and fast-forward main:
+
+# After reviewing temp branch, integrate to main.
+# PREFERRED (if no cherry-picks on main since branch creation):
 git checkout main
-git merge --ff-only merge/upstream-YYYYMMDD-HHMM
+git merge --ff-only merge/upstream-YYYYMMDD-HHMMSS
 git push origin main
+
+# FALLBACK (if ff-only fails due to diverged cherry-picks — happened 2026-03-14):
+git checkout main
+git reset --hard merge/upstream-YYYYMMDD-HHMMSS   # safe: backup tag protects old state
+git push origin main --force-with-lease            # force-with-lease = safe force
+
+# Cleanup:
+git branch -d merge/upstream-YYYYMMDD-HHMMSS
+git push origin --delete merge/upstream-YYYYMMDD-HHMMSS
 ```
 
 ## ⚠️ Custom File Protection Rules
 
-1. After any NEW customization: add the file to `$CustomFiles` in `dev.docs/scripts/merge-upstream.ps1`
+1. After any NEW customization: add the file to `$CustomFiles` in `dev.docs/scripts/merge-upstream.ps1` (**36 files** as of 2026-03-14)
 2. Also document it in Section "Changed Files Summary" above
 3. Run `pwsh dev.docs/scripts/merge-upstream.ps1 -DryRun` to verify patches save correctly
+4. `$CustomFiles` must match `git diff upstream/main HEAD --diff-filter=M` (auto-checked at runtime)
 
 
 ## External Config Files (NOT in git — must be backed up separately)
@@ -125,9 +140,9 @@ git push origin main
 ## Build Commands
 
 ```bash
+pnpm install --frozen-lockfile  # Install dependencies (reproducible)
 npm run ui:build    # Rebuild Vite UI bundle (REQUIRED after any ui/src/ changes)
 npx tsdown          # Rebuild Node.js gateway backend
-npm run build       # Full build (backend only, does NOT rebuild UI)
 ```
 
 ## Dev Workflow
