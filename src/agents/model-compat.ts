@@ -52,28 +52,40 @@ export function normalizeModelCompat(model: Model<Api>): Model<Api> {
     return model;
   }
 
-  // The `developer` message role is an OpenAI-native convention. All other
-  // openai-completions backends (proxies, Qwen, GLM, DeepSeek, Kimi, etc.)
-  // only recognise `system`. Force supportsDeveloperRole=false for any model
-  // whose baseUrl is not a known native OpenAI endpoint, unless the caller
-  // has already pinned the value explicitly.
+  // The `developer` role is an OpenAI-native behavior that most compatible
+  // backends reject. Force it off for non-native endpoints unless the user
+  // has explicitly opted in via their model config.
+  //
+  // `supportsUsageInStreaming` is NOT forced off — most OpenAI-compatible
+  // backends (DashScope, DeepSeek, Groq, Together, etc.) handle
+  // `stream_options: { include_usage: true }` correctly, and disabling it
+  // silently breaks usage/cost tracking for all non-native providers.
+  // Users can still opt out with `compat.supportsUsageInStreaming: false`
+  // if their backend rejects the parameter.
   const compat = model.compat ?? undefined;
-  if (compat?.supportsDeveloperRole === false) {
-    return model;
-  }
   // When baseUrl is empty the pi-ai library defaults to api.openai.com, so
-  // leave compat unchanged and let the existing default behaviour apply.
-  // Note: an explicit supportsDeveloperRole: true is intentionally overridden
-  // here for non-native endpoints — those backends would return a 400 if we
-  // sent `developer`, so safety takes precedence over the caller's hint.
+  // leave compat unchanged and let default native behavior apply.
   const needsForce = baseUrl ? !isOpenAINativeEndpoint(baseUrl) : false;
   if (!needsForce) {
     return model;
   }
 
-  // Return a new object — do not mutate the caller's model reference.
+  // Respect explicit user overrides.
+  const forcedDeveloperRole = compat?.supportsDeveloperRole === true;
+
+  if (forcedDeveloperRole) {
+    return model;
+  }
+
+  // Only force supportsDeveloperRole off. Leave supportsUsageInStreaming
+  // at whatever the user set or pi-ai's default (true).
   return {
     ...model,
-    compat: compat ? { ...compat, supportsDeveloperRole: false } : { supportsDeveloperRole: false },
+    compat: compat
+      ? {
+          ...compat,
+          supportsDeveloperRole: false,
+        }
+      : { supportsDeveloperRole: false },
   } as typeof model;
 }

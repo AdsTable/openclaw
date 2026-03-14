@@ -1,12 +1,12 @@
-import { createWhatsAppLoginTool } from "../../channels/plugins/agent-tools/whatsapp-login.js";
-import { getActiveWebListener } from "../../web/active-listener.js";
+import { getActiveWebListener } from "../../../extensions/whatsapp/src/active-listener.js";
 import {
   getWebAuthAgeMs,
   logoutWeb,
   logWebSelfId,
   readWebSelfId,
   webAuthExists,
-} from "../../web/auth-store.js";
+} from "../../../extensions/whatsapp/src/auth-store.js";
+import { createWhatsAppLoginTool } from "../../channels/plugins/agent-tools/whatsapp-login.js";
 import type { PluginRuntime } from "./types.js";
 
 const sendMessageWhatsAppLazy: PluginRuntime["channel"]["whatsapp"]["sendMessageWhatsApp"] = async (
@@ -55,26 +55,29 @@ const handleWhatsAppActionLazy: PluginRuntime["channel"]["whatsapp"]["handleWhat
     return handleWhatsAppAction(...args);
   };
 
-let webOutboundPromise: Promise<typeof import("../../web/outbound.js")> | null = null;
-let webLoginPromise: Promise<typeof import("../../web/login.js")> | null = null;
-let webLoginQrPromise: Promise<typeof import("../../web/login-qr.js")> | null = null;
+let webLoginQrPromise: Promise<
+  typeof import("../../../extensions/whatsapp/src/login-qr.js")
+> | null = null;
 let webChannelPromise: Promise<typeof import("../../channels/web/index.js")> | null = null;
+let webOutboundPromise: Promise<typeof import("./runtime-whatsapp-outbound.runtime.js")> | null =
+  null;
+let webLoginPromise: Promise<typeof import("./runtime-whatsapp-login.runtime.js")> | null = null;
 let whatsappActionsPromise: Promise<
   typeof import("../../agents/tools/whatsapp-actions.js")
 > | null = null;
 
 function loadWebOutbound() {
-  webOutboundPromise ??= import("../../web/outbound.js");
+  webOutboundPromise ??= import("./runtime-whatsapp-outbound.runtime.js");
   return webOutboundPromise;
 }
 
 function loadWebLogin() {
-  webLoginPromise ??= import("../../web/login.js");
+  webLoginPromise ??= import("./runtime-whatsapp-login.runtime.js");
   return webLoginPromise;
 }
 
 function loadWebLoginQr() {
-  webLoginQrPromise ??= import("../../web/login-qr.js");
+  webLoginQrPromise ??= import("../../../extensions/whatsapp/src/login-qr.js");
   return webLoginQrPromise;
 }
 

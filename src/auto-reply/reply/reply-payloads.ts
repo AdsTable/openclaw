@@ -1,3 +1,4 @@
+import { parseTelegramTarget } from "../../../extensions/telegram/src/targets.js";
 import { isMessagingToolDuplicate } from "../../agents/pi-embedded-helpers.js";
 import type { MessagingToolSend } from "../../agents/pi-embedded-runner.js";
 import { normalizeChannelId } from "../../channels/plugins/index.js";
@@ -8,6 +9,19 @@ import type { OriginatingChannelType } from "../templating.js";
 import type { ReplyPayload } from "../types.js";
 import { extractReplyToTag } from "./reply-tags.js";
 import { createReplyToModeFilterForChannel } from "./reply-threading.js";
+
+export function formatBtwTextForExternalDelivery(payload: ReplyPayload): string | undefined {
+  const text = payload.text?.trim();
+  if (!text) {
+    return payload.text;
+  }
+  const question = payload.btw?.question?.trim();
+  if (!question) {
+    return payload.text;
+  }
+  const formatted = `BTW\nQuestion: ${question}\n\n${text}`;
+  return text === formatted || text.startsWith("BTW\nQuestion:") ? text : formatted;
+}
 
 function resolveReplyThreadingForPayload(params: {
   payload: ReplyPayload;
@@ -162,6 +176,62 @@ function normalizeProviderForComparison(value?: string): string | undefined {
   return PROVIDER_ALIAS_MAP[lowered] ?? lowered;
 }
 
+function normalizeThreadIdForComparison(value?: string): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (/^-?\d+$/.test(trimmed)) {
+    return String(Number.parseInt(trimmed, 10));
+  }
+  return trimmed.toLowerCase();
+}
+
+function resolveTargetProviderForComparison(params: {
+  currentProvider: string;
+  targetProvider?: string;
+}): string {
+  const targetProvider = normalizeProviderForComparison(params.targetProvider);
+  if (!targetProvider || targetProvider === "message") {
+    return params.currentProvider;
+  }
+  return targetProvider;
+}
+
+function targetsMatchForSuppression(params: {
+  provider: string;
+  originTarget: string;
+  targetKey: string;
+  targetThreadId?: string;
+}): boolean {
+  if (params.provider !== "telegram") {
+    return params.targetKey === params.originTarget;
+  }
+
+  const origin = parseTelegramTarget(params.originTarget);
+  const target = parseTelegramTarget(params.targetKey);
+  const explicitTargetThreadId = normalizeThreadIdForComparison(params.targetThreadId);
+  const targetThreadId =
+    explicitTargetThreadId ??
+    (target.messageThreadId != null ? String(target.messageThreadId) : undefined);
+  const originThreadId =
+    origin.messageThreadId != null ? String(origin.messageThreadId) : undefined;
+  if (origin.chatId.trim().toLowerCase() !== target.chatId.trim().toLowerCase()) {
+    return false;
+  }
+  if (originThreadId && targetThreadId != null) {
+    return originThreadId === targetThreadId;
+  }
+  if (originThreadId && targetThreadId == null) {
+    return false;
+  }
+  if (!originThreadId && targetThreadId != null) {
+    return false;
+  }
+  // chatId already matched and neither side carries thread context.
+  return true;
+}
+
 export function shouldSuppressMessagingToolReplies(params: {
   messageProvider?: string;
   messagingToolSentTargets?: MessagingToolSend[];
@@ -182,16 +252,14 @@ export function shouldSuppressMessagingToolReplies(params: {
     return false;
   }
   return sentTargets.some((target) => {
-    const targetProvider = normalizeProviderForComparison(target?.provider);
-    if (!targetProvider) {
+    const targetProvider = resolveTargetProviderForComparison({
+      currentProvider: provider,
+      targetProvider: target?.provider,
+    });
+    if (targetProvider !== provider) {
       return false;
     }
-    const isGenericMessageProvider = targetProvider === "message";
-    if (!isGenericMessageProvider && targetProvider !== provider) {
-      return false;
-    }
-    const targetNormalizationProvider = isGenericMessageProvider ? provider : targetProvider;
-    const targetKey = normalizeTargetForProvider(targetNormalizationProvider, target.to);
+    const targetKey = normalizeTargetForProvider(targetProvider, target.to);
     if (!targetKey) {
       return false;
     }
@@ -199,6 +267,11 @@ export function shouldSuppressMessagingToolReplies(params: {
     if (originAccount && targetAccount && originAccount !== targetAccount) {
       return false;
     }
-    return targetKey === originTarget;
+    return targetsMatchForSuppression({
+      provider,
+      originTarget,
+      targetKey,
+      targetThreadId: target.threadId,
+    });
   });
 }
