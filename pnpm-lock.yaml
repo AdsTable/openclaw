@@ -198,6 +198,9 @@ importers:
       yaml:
         specifier: ^2.8.2
         version: 2.8.2
+      z-ai-web-dev-sdk:
+        specifier: ^0.0.17
+        version: 0.0.17
       zod:
         specifier: ^4.3.6
         version: 4.3.6
@@ -6084,6 +6087,11 @@ packages:
   yoctocolors@2.1.2:
     resolution: {integrity: sha512-CzhO+pFNo8ajLM2d2IW/R93ipy99LWjtwblvC1RsoSUMZgyLbYFr221TnSNT7GjGdYui6P459mw9JH/g/zW2ug==}
     engines: {node: '>=18'}
+
+  z-ai-web-dev-sdk@0.0.17:
+    resolution: {integrity: sha512-K86s7ixHpqIM5D3wmxlGKR9Kp6QnBYn0K9TcE7YGr84kejR7utpBixJlQlkwAdqML5pfhOCNixTb2trhHIeUbg==}
+    engines: {bun: '>=1.3.0', node: '>=20.0.0'}
+    hasBin: true
 
   zca-js@2.1.1:
     resolution: {integrity: sha512-6zCmaIIWg/1eYlvCvO4rVsFt6SQ8MRodro3dCzMkk+LNgB3MyaEMBywBJfsw44WhODmOh8iMlPv4xDTNTMWDWA==}
@@ -12516,6 +12524,8 @@ snapshots:
       fd-slicer: 1.1.0
 
   yoctocolors@2.1.2: {}
+
+  z-ai-web-dev-sdk@0.0.17: {}
 
   zca-js@2.1.1:
     dependencies:
