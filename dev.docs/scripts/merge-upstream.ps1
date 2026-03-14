@@ -168,7 +168,9 @@ Write-Host "Working branch    : $mergeBranch" -ForegroundColor Cyan
 # Show what upstream is bringing (changelog)
 $newCommits = @(git log HEAD..upstream/main --oneline --no-merges)
 Write-Host "`nUpstream brings $($newCommits.Count) new commit(s):" -ForegroundColor Cyan
-if ($newCommits.Count -gt 0) { $newCommits | ForEach-Object { Write-Host "  $_" } } else { Write-Host "  (none — already up-to-date)" -ForegroundColor Yellow }
+$showCount = [Math]::Min(20, $newCommits.Count)
+$newCommits | Select-Object -First $showCount | ForEach-Object { Write-Host "  $_" }
+if ($newCommits.Count -gt $showCount) { Write-Host "  ... and $($newCommits.Count - $showCount) more (see git log HEAD..upstream/main)" -ForegroundColor DarkGray }
 
 # Auto-detect customized files — FAIL if $CustomFiles is out of sync (path-sep normalized)
 $detectedFiles = @(
