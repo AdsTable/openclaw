@@ -8,9 +8,9 @@
 #   4. Save patches BOM-free UTF-8 LF (git am compatible) BEFORE any merge
 #   5. Create permanent backup tag in origin (survives branch deletion)
 #   6. Checkout main, pull ff-only, create TEMP merge branch
-#   7. Show upstream changelog + auto-detect $CustomFiles drift (FAIL if unprotected files found)
+#   7. Show upstream changelog + auto-detect $CustomFiles drift (WARN if unprotected files found)
 #   8. Merge upstream/main into temp branch; auto-restore $CustomFiles on conflict
-#   9. Post-merge verification + npm ci + build + typecheck (TS errors ABORT)
+#   9. Post-merge verification + pnpm install --frozen-lockfile + build + typecheck (TS errors ABORT)
 #  10. Push merge branch; user manually fast-forwards main after review
 #
 # Recovery: git am dev.docs/patches/customizations-DATE.fmtpatch
@@ -24,7 +24,7 @@ Set-Location $RepoRoot
 
 # ── ALL files we customized vs upstream ─────────────────────────────────────
 # Source of truth: git diff --name-only upstream/main HEAD
-# Verified: 2026-03-14 (39 files diff total; dev.docs/* and docs/zh-CN/* filtered below)
+# Verified: 2026-03-14 post-merge (17 M-files; dev.docs/* and docs/zh-CN/* filtered)
 # RULE: add ONLY files present in `git diff upstream/main HEAD` AND documented in
 #       dev.docs/CUSTOMIZATIONS.md. Never add files just because they are open in IDE.
 $CustomFiles = @(
@@ -54,6 +54,9 @@ $CustomFiles = @(
   ".gitleaks.toml",
   ".githooks/post-merge",
   ".githooks/pre-push",
+  # Dependencies — both M in post-merge diff (z-ai-web-dev-sdk + pnpm bump)
+  "package.json",
+  "pnpm-lock.yaml",
   # zh-CN templates translated to English (all 13 files)
   "docs/zh-CN/reference/templates/AGENTS.dev.md",
   "docs/zh-CN/reference/templates/AGENTS.md",
