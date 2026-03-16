@@ -34,6 +34,16 @@ export default defineConfig(() => {
       // Keep CI/onboard logs clean; current control UI chunking is intentionally above 500 kB.
       chunkSizeWarningLimit: 1024,
     },
+    resolve: {
+      alias: {
+        // Prevent server-only Node.js built-ins from crashing the browser bundle.
+        // Transitive imports from src/ (e.g. tmp-openclaw-dir.ts) reference node:fs
+        // at module top-level — fs.constants.W_OK causes a TypeError in browsers.
+        "node:fs/promises": path.resolve(here, "src/node-stubs/empty.ts"),
+        "node:fs": path.resolve(here, "src/node-stubs/fs.ts"),
+        "node:child_process": path.resolve(here, "src/node-stubs/empty.ts"),
+      },
+    },
     server: {
       host: true,
       port: 5173,
