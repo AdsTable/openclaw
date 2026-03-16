@@ -57,8 +57,11 @@ $CustomFiles = @(
   # Dependencies — both M in post-merge diff (z-ai-web-dev-sdk + pnpm bump)
   "package.json",
   "pnpm-lock.yaml",
-  # Build config — plugin runtime entry (fork-only fix for dist/ plugin loading)
+  # Build config — plugin runtime entry + Vite node stubs (fork-only fixes)
   "tsdown.config.ts",
+  "ui/vite.config.ts",
+  "ui/src/node-stubs/fs.ts",
+  "ui/src/node-stubs/empty.ts",
   # zh-CN templates translated to English (all 13 files)
   "docs/zh-CN/reference/templates/AGENTS.dev.md",
   "docs/zh-CN/reference/templates/AGENTS.md",
