@@ -4,8 +4,8 @@
 > When merging upstream, these changes MUST be preserved or re-applied.
 > Upstream: https://github.com/openclaw/openclaw
 
-> **STATUS (2026-03-14)**: Upstream merged — 2405 commits integrated into main.
-> 36 CustomFiles protected. All customizations verified present post-merge.
+> **STATUS (2026-03-16)**: Upstream merged — 2405+260 commits integrated into main.
+> Custom files preserved. Plugin runtime tsdown entry added (fork-only fix).
 
 ## Custom Commits (our fork vs upstream)
 
@@ -19,6 +19,8 @@
 | e8f36766c | Agents: split modal/callout into two states (no spam) | `app-settings.ts`, `modal.ts`, `app.ts`, `app-view-state.ts` |
 | 42e1fb0d7 | Agents: ❌ invalid provider marker in dropdown | `agents-utils.ts`, `agents.ts` |
 | b4fde200c | Fix: unify error format, guard empty provider Set, protect auth-profiles.json | `app-render.ts`, `agents.ts`, `.gitignore` |
+| 826a6270e | fix(build): add plugin runtime entry to tsdown | `tsdown.config.ts` |
+| 43176fe9f | chore: merge upstream/main 20260316 (260 commits) | 250+ files |
 
 ## Changed Files Summary
 
@@ -97,6 +99,11 @@
 - Color palette customized: warmer dark theme (`--bg`, `--bg-accent`, `--bg-elevated`, `--bg-hover`, card/surface colors) replacing upstream's deep cold dark palette
 - All 78 CSS custom property values in `:root` have custom color values
 
+### 19. `tsdown.config.ts`
+- Added `runtime/index` entry: `{ "runtime/index": "src/plugins/runtime/index.ts" }`
+- Required so plugin loader (`resolvePluginRuntimeModulePath`) finds `dist/runtime/index.js`
+- Without this, all channel plugins fail with "Unable to resolve plugin runtime module"
+
 ### 18. `docs/zh-CN/reference/templates/*.md` (13 files)
 - Translated from zh-CN to English. Must be preserved on upstream merge.
 - Files: AGENTS.dev, AGENTS, BOOT, BOOTSTRAP, HEARTBEAT, IDENTITY.dev, IDENTITY, SOUL.dev, SOUL, TOOLS.dev, TOOLS, USER.dev, USER
@@ -143,17 +150,18 @@ git push origin --delete merge/upstream-YYYYMMDD-HHMMSS
 ## Build Commands
 
 ```bash
-pnpm install --frozen-lockfile  # Install dependencies (reproducible)
-npm run ui:build    # Rebuild Vite UI bundle (REQUIRED after any ui/src/ changes)
-npx tsdown          # Rebuild Node.js gateway backend
+pnpm install --frozen-lockfile   # Install dependencies (reproducible)
+node scripts/tsdown-build.mjs   # Rebuild Node.js gateway backend
+node scripts/runtime-postbuild.mjs  # Copy plugin manifests + metadata to dist/
+pnpm run ui:build               # Rebuild Vite UI bundle (REQUIRED after any ui/src/ changes)
 ```
 
 ## Dev Workflow
 
 ```bash
 # Terminal 1: Vite HMR (instant UI updates, no restart needed)
-npm run ui:dev
+pnpm run ui:dev
 
-# Terminal 2: Gateway
+# Terminal 2: Gateway (from BitBucket/adstable.site repo)
 scripts\start-gateway.bat
 ```

@@ -34,8 +34,9 @@ git apply --3way dev.docs/patches/customizations-LATEST.diff  # Fallback: apply 
 
 ### Build Commands
 ```bash
-pnpm run ui:build    # Vite UI bundle (REQUIRED after ui/src/ changes)
-npx tsdown          # Node.js gateway backend
+node scripts/tsdown-build.mjs          # Node.js gateway backend
+node scripts/runtime-postbuild.mjs     # Copy plugin manifests + SDK aliases to dist/
+pnpm run ui:build                      # Vite UI bundle (REQUIRED after ui/src/ changes)
 ```
 
 ### Gateway Startup

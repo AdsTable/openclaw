@@ -57,6 +57,8 @@ $CustomFiles = @(
   # Dependencies — both M in post-merge diff (z-ai-web-dev-sdk + pnpm bump)
   "package.json",
   "pnpm-lock.yaml",
+  # Build config — plugin runtime entry (fork-only fix for dist/ plugin loading)
+  "tsdown.config.ts",
   # zh-CN templates translated to English (all 13 files)
   "docs/zh-CN/reference/templates/AGENTS.dev.md",
   "docs/zh-CN/reference/templates/AGENTS.md",
