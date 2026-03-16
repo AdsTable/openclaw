@@ -44,6 +44,15 @@ export default defineConfig(() => {
         "node:child_process": path.resolve(here, "src/node-stubs/empty.ts"),
       },
     },
+    define: {
+      // Vite 8 no longer polyfills Node.js globals for browser bundles.
+      // src/ modules that use process.env / process.cwd() transitively cause
+      // "process is not defined" at runtime — provide safe browser stubs.
+      "process.env": "{}",
+      "process.cwd": '() => "/"',
+      "process.platform": '"browser"',
+      "process.version": '"v0.0.0"',
+    },
     server: {
       host: true,
       port: 5173,
