@@ -157,6 +157,11 @@ export default defineConfig([
     entry: "src/extensionAPI.ts",
   }),
   nodeBuildConfig({
+    // Plugin runtime must live at dist/runtime/index.js so the plugin loader
+    // (resolvePluginRuntimeModulePath) can find it when running from dist/.
+    entry: { "runtime/index": "src/plugins/runtime/index.ts" },
+  }),
+  nodeBuildConfig({
     entry: ["src/hooks/bundled/*/handler.ts", "src/hooks/llm-slug-generator.ts"],
   }),
 ]);
