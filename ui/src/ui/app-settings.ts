@@ -293,7 +293,13 @@ export function inferBasePath() {
   if (typeof configured === "string" && configured.trim()) {
     return normalizeBasePath(configured);
   }
-  return inferBasePathFromPathname(window.location.pathname);
+  const inferred = inferBasePathFromPathname(window.location.pathname);
+  // Reject inferred base paths that are a single numeric/UUID-like segment —
+  // those are SPA routes (e.g. session IDs like /5, /42), not mount prefixes.
+  if (inferred && /^\/[0-9a-f-]{1,36}$/i.test(inferred)) {
+    return "";
+  }
+  return inferred;
 }
 
 export function syncThemeWithSettings(host: SettingsHost) {
