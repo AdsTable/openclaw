@@ -37,10 +37,9 @@ export default defineConfig(() => {
     resolve: {
       alias: {
         // Prevent server-only Node.js built-ins from crashing the browser bundle.
-        // Transitive imports from src/ (e.g. tmp-openclaw-dir.ts) reference node:fs
-        // at module top-level — fs.constants.W_OK causes a TypeError in browsers.
         "node:fs/promises": path.resolve(here, "src/node-stubs/empty.ts"),
         "node:fs": path.resolve(here, "src/node-stubs/fs.ts"),
+        "node:path": path.resolve(here, "src/node-stubs/path.ts"),
         "node:child_process": path.resolve(here, "src/node-stubs/empty.ts"),
       },
     },
