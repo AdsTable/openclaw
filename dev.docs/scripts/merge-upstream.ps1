@@ -62,6 +62,7 @@ $CustomFiles = @(
   "ui/vite.config.ts",
   "ui/src/node-stubs/fs.ts",
   "ui/src/node-stubs/empty.ts",
+  "ui/src/node-stubs/path.ts",
   # zh-CN templates translated to English (all 13 files)
   "docs/zh-CN/reference/templates/AGENTS.dev.md",
   "docs/zh-CN/reference/templates/AGENTS.md",
