@@ -37,11 +37,25 @@ export default defineConfig(() => {
     resolve: {
       alias: {
         // Prevent server-only Node.js built-ins from crashing the browser bundle.
+        // Each alias maps to a minimal browser-safe stub under src/node-stubs/.
         "node:fs/promises": path.resolve(here, "src/node-stubs/empty.ts"),
         "node:fs": path.resolve(here, "src/node-stubs/fs.ts"),
         "node:path": path.resolve(here, "src/node-stubs/path.ts"),
         "node:os": path.resolve(here, "src/node-stubs/os.ts"),
+        "node:util": path.resolve(here, "src/node-stubs/util.ts"),
         "node:child_process": path.resolve(here, "src/node-stubs/empty.ts"),
+        // The remaining node: modules are auto-externalized by Vite as empty
+        // objects. Alias them to empty.ts so they don't emit console warnings
+        // and any named import resolves to a no-op function.
+        "node:assert": path.resolve(here, "src/node-stubs/empty.ts"),
+        "node:crypto": path.resolve(here, "src/node-stubs/empty.ts"),
+        "node:module": path.resolve(here, "src/node-stubs/empty.ts"),
+        "node:perf_hooks": path.resolve(here, "src/node-stubs/empty.ts"),
+        "node:process": path.resolve(here, "src/node-stubs/empty.ts"),
+        "node:tty": path.resolve(here, "src/node-stubs/empty.ts"),
+        "node:url": path.resolve(here, "src/node-stubs/empty.ts"),
+        "node:v8": path.resolve(here, "src/node-stubs/empty.ts"),
+        "node:vm": path.resolve(here, "src/node-stubs/empty.ts"),
       },
     },
     define: {
