@@ -40,6 +40,7 @@ export default defineConfig(() => {
         "node:fs/promises": path.resolve(here, "src/node-stubs/empty.ts"),
         "node:fs": path.resolve(here, "src/node-stubs/fs.ts"),
         "node:path": path.resolve(here, "src/node-stubs/path.ts"),
+        "node:os": path.resolve(here, "src/node-stubs/os.ts"),
         "node:child_process": path.resolve(here, "src/node-stubs/empty.ts"),
       },
     },

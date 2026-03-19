@@ -63,6 +63,7 @@ $CustomFiles = @(
   "ui/src/node-stubs/fs.ts",
   "ui/src/node-stubs/empty.ts",
   "ui/src/node-stubs/path.ts",
+  "ui/src/node-stubs/os.ts",
   # zh-CN templates translated to English (all 13 files)
   "docs/zh-CN/reference/templates/AGENTS.dev.md",
   "docs/zh-CN/reference/templates/AGENTS.md",
