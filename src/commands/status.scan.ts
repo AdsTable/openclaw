@@ -120,9 +120,9 @@ export type StatusScanResult = {
   gatewayProbe: GatewayProbeSnapshot["gatewayProbe"];
   gatewayReachable: boolean;
   gatewaySelf: ReturnType<typeof pickGatewaySelfPresence>;
-channelIssues: ReturnType<typeof collectChannelStatusIssuesFn>;
-agentStatus: Awaited<ReturnType<typeof getAgentLocalStatuses>>;
-channels: Awaited<ReturnType<typeof buildChannelsTableFn>>;
+  channelIssues: ReturnType<typeof collectChannelStatusIssuesFn>;
+  agentStatus: Awaited<ReturnType<typeof getAgentLocalStatuses>>;
+  channels: Awaited<ReturnType<typeof buildChannelsTableFn>>;
   summary: Awaited<ReturnType<typeof getStatusSummary>>;
   memory: MemoryStatusSnapshot | null;
   memoryPlugin: MemoryPluginStatus;

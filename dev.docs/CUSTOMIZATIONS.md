@@ -91,18 +91,16 @@
 - Custom gitleaks config (API key detection rules). Added to $CustomFiles 2026-03-14.
 
 ### 16. `ui/src/ui/storage.ts`
-- Simplified vs upstream: removed `LEGACY_TOKEN_SESSION_KEY`, `TOKEN_SESSION_KEY_PREFIX`, `PersistedUiSettings` type, `navWidth` field
-- `theme` field simplified from `ThemeName + ThemeMode` to `ThemeMode` only
-- Removed `parseThemeSelection` import dependency
+- **Now identical to upstream** (removed from CustomFiles — no longer needs protection).
+- Previously simplified, now restored: scoped per-gateway storage, borderRadius, snapBorderRadius.
 
 ### 17. `ui/src/styles/base.css`
 - Color palette customized: warmer dark theme (`--bg`, `--bg-accent`, `--bg-elevated`, `--bg-hover`, card/surface colors) replacing upstream's deep cold dark palette
 - All 78 CSS custom property values in `:root` have custom color values
 
 ### 19. `tsdown.config.ts`
-- Added `runtime/index` entry: `{ "runtime/index": "src/plugins/runtime/index.ts" }`
-- Required so plugin loader (`resolvePluginRuntimeModulePath`) finds `dist/runtime/index.js`
-- Without this, all channel plugins fail with "Unable to resolve plugin runtime module"
+- **Now identical to upstream** — upstream integrated the `runtime/index` entry.
+- No longer needs protection in CustomFiles.
 
 ### 18. `docs/zh-CN/reference/templates/*.md` (13 files)
 - Translated from zh-CN to English. Must be preserved on upstream merge.

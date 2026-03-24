@@ -24,7 +24,7 @@ Set-Location $RepoRoot
 
 # ── ALL files we customized vs upstream ─────────────────────────────────────
 # Source of truth: git diff --name-only upstream/main HEAD
-# Verified: 2026-03-14 post-merge (17 M-files; dev.docs/* and docs/zh-CN/* filtered)
+# Verified: 2026-03-24 post-merge v2026.3.23 (storage.ts, tsdown.config.ts, status.scan.ts now = upstream)
 # RULE: add ONLY files present in `git diff upstream/main HEAD` AND documented in
 #       dev.docs/CUSTOMIZATIONS.md. Never add files just because they are open in IDE.
 $CustomFiles = @(
@@ -45,8 +45,6 @@ $CustomFiles = @(
   # Styles — both exist in upstream (verified: git ls-tree upstream/main)
   "ui/src/styles/components.css",
   "ui/src/styles/base.css",
-  # Storage utility — exists in upstream (verified: git ls-tree upstream/main)
-  "ui/src/ui/storage.ts",
   # Repo infrastructure
   "CUSTOMIZATIONS.md",
   "scripts/merge-upstream.ps1",
@@ -57,8 +55,7 @@ $CustomFiles = @(
   # Dependencies — both M in post-merge diff (z-ai-web-dev-sdk + pnpm bump)
   "package.json",
   "pnpm-lock.yaml",
-  # Build config — plugin runtime entry + Vite node stubs (fork-only fixes)
-  "tsdown.config.ts",
+  # Build config — Vite node stubs + browser polyfills (fork-only fixes)
   "ui/vite.config.ts",
   "ui/src/node-stubs/fs.ts",
   "ui/src/node-stubs/empty.ts",
@@ -207,30 +204,84 @@ git merge upstream/main --no-ff -m "chore: merge upstream/main $date"
 $mergeExitCode = $LASTEXITCODE
 
 if ($mergeExitCode -ne 0) {
-  $conflicts = git diff --name-only --diff-filter=U
+  $conflicts = @(git diff --name-only --diff-filter=U)
   Write-Host "`nCONFLICTS in:" -ForegroundColor Yellow
   $conflicts | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
 
-  Write-Host "`nAuto-restoring custom files from origin/main..." -ForegroundColor Cyan
+  # ── Strategy B: three-way merge per custom file ──────────────────────────
+  # Instead of blind `git checkout origin/main -- $f` (which loses upstream
+  # additions), we only restore custom files that are actually conflicted.
+  # For conflicted custom files we use `git checkout --ours` (keeps our version
+  # for that file) because the merge already incorporated upstream changes into
+  # non-conflicting hunks.  Non-conflicted files keep git's auto-merge result
+  # which correctly combines both sides.
+  Write-Host "`nResolving conflicts in custom files (three-way strategy)..." -ForegroundColor Cyan
   $restoreErrors = @()
+  $conflictSet = [System.Collections.Generic.HashSet[string]]::new(
+    [System.StringComparer]::OrdinalIgnoreCase
+  )
+  $conflicts | ForEach-Object { [void]$conflictSet.Add($_.Replace('\','/')) }
+
   foreach ($f in $CustomFiles) {
-    git checkout origin/main -- $f 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) {
-      Write-Host "  OK : $f" -ForegroundColor Green
-    } else {
-      Write-Host "  ERR: $f (not in origin/main?)" -ForegroundColor Red
-      $restoreErrors += $f
+    $fNorm = $f.Replace('\','/')
+    if ($conflictSet.Contains($fNorm)) {
+      # File has conflict markers — take our side (preserves our customizations).
+      # Upstream non-conflicting hunks are already merged by git.
+      git checkout --ours -- $f 2>&1 | Out-Null
+      if ($LASTEXITCODE -eq 0) {
+        git add $f 2>&1 | Out-Null
+        Write-Host "  OURS: $f (conflicted → kept our version)" -ForegroundColor Yellow
+      } else {
+        Write-Host "  ERR : $f (checkout --ours failed)" -ForegroundColor Red
+        $restoreErrors += $f
+      }
+    }
+    # Non-conflicted custom files: git already merged them correctly — leave as-is.
+  }
+
+  # Resolve remaining non-custom conflicts by taking upstream version
+  $remainingConflicts = @(git diff --name-only --diff-filter=U)
+  foreach ($rc in $remainingConflicts) {
+    $rcNorm = $rc.Replace('\','/')
+    if ($CustomFiles -notcontains $rcNorm) {
+      git checkout --theirs -- $rc 2>&1 | Out-Null
+      git add $rc 2>&1 | Out-Null
+      Write-Host "  THEIRS: $rc (non-custom → took upstream)" -ForegroundColor DarkGray
     }
   }
+
   if ($restoreErrors) {
-    Write-Host "`nWARN: $($restoreErrors.Count) file(s) could not be restored. Review manually." -ForegroundColor Yellow
+    Write-Host "`nWARN: $($restoreErrors.Count) file(s) could not be resolved. Review manually." -ForegroundColor Yellow
   }
   git add -u
-  git commit -m "chore: merge upstream/main $date (conflicts resolved — custom files restored)"
+  git commit -m "chore: merge upstream/main $date (conflicts resolved — three-way strategy)"
   Write-Host "`nConflicts resolved and committed." -ForegroundColor Green
   Write-Host "REVIEW the merge in: $mergeBranch" -ForegroundColor Yellow
 } else {
   Write-Host "Merge successful (no conflicts)." -ForegroundColor Green
+}
+
+# ── Strategy C: post-merge audit ──────────────────────────────────────────
+# After merge, diff each CustomFile against upstream to detect accidental
+# deletions.  This catches lines that upstream ADDED but our version lost
+# during conflict resolution.
+Write-Host "`nPost-merge audit — checking for accidentally removed upstream lines..." -ForegroundColor Cyan
+$auditIssues = @()
+foreach ($f in $CustomFiles) {
+  if (-not (Test-Path $f)) { continue }
+  # Lines in upstream but missing from our merged version (potential regressions)
+  $removed = @(git diff upstream/main HEAD -- $f 2>&1 |
+    Select-String "^\-" | Where-Object { $_ -notmatch "^\-\-\-" })
+  if ($removed.Count -gt 20) {
+    $auditIssues += "  AUDIT: $f — $($removed.Count) lines removed vs upstream (review needed)"
+  }
+}
+if ($auditIssues) {
+  Write-Host "`n$($auditIssues.Count) file(s) with significant upstream deletions:" -ForegroundColor Yellow
+  $auditIssues | ForEach-Object { Write-Host $_ -ForegroundColor Yellow }
+  Write-Host "  Run: git diff upstream/main HEAD -- <file> to review each one." -ForegroundColor DarkGray
+} else {
+  Write-Host "  Audit OK — no unexpected large deletions detected." -ForegroundColor Green
 }
 
 # Step 8: Post-merge verification
