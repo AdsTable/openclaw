@@ -919,6 +919,7 @@ export function renderApp(state: AppViewState) {
                     error: state.toolsCatalogError,
                     result: state.toolsCatalogResult,
                   },
+                  modelKeyError: state.agentsModelKeyError,
                   onRefresh: async () => {
                     await loadAgents(state);
                     const agentIds = state.agentsList?.agents?.map((entry) => entry.id) ?? [];
@@ -1069,7 +1070,7 @@ export function renderApp(state: AppViewState) {
                   onConfigSave: () => saveAgentsConfig(state),
                   onChannelsRefresh: () => loadChannels(state, false),
                   onCronRefresh: () => state.loadCron(),
-                  onCronRunNow: (jobId) => {
+                  onCronRunNow: (jobId: string) => {
                     const job = state.cronJobs.find((entry) => entry.id === jobId);
                     if (!job) {
                       return;
@@ -1211,7 +1212,7 @@ export function renderApp(state: AppViewState) {
                     }
                     updateConfigFormValue(state, basePath, { primary, fallbacks: normalized });
                   },
-                  onSetDefault: (agentId) => {
+                  onSetDefault: (agentId: string) => {
                     if (!configValue) {
                       return;
                     }

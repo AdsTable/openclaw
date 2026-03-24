@@ -40,6 +40,7 @@ export type ControlUiRequestOptions = {
 
 export type ControlUiRootState =
   | { kind: "resolved"; path: string }
+  | { kind: "bundled"; path: string }
   | { kind: "invalid"; path: string }
   | { kind: "missing" };
 

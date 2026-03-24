@@ -227,6 +227,8 @@ export type AppViewState = {
   usageLogFilterTools: string[];
   usageLogFilterHasTools: boolean;
   usageLogFilterQuery: string;
+  agentsModelKeyError: string | null;
+  agentsModelKeyModalError: string | null;
 } & Pick<
   CronState,
   | "cronLoading"

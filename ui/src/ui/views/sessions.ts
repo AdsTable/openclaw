@@ -13,12 +13,23 @@ export type SessionsProps = {
   includeGlobal: boolean;
   includeUnknown: boolean;
   basePath: string;
+  searchQuery: string;
+  sortColumn: "key" | "kind" | "updated" | "tokens";
+  sortDir: "asc" | "desc";
+  page: number;
+  pageSize: number;
+  actionsOpenKey: string | null;
   onFiltersChange: (next: {
     activeMinutes: string;
     limit: string;
     includeGlobal: boolean;
     includeUnknown: boolean;
   }) => void;
+  onSearchChange: (q: string) => void;
+  onSortChange: (col: SessionsProps["sortColumn"], dir: SessionsProps["sortDir"]) => void;
+  onPageChange: (p: number) => void;
+  onPageSizeChange: (s: number) => void;
+  onActionsOpenChange: (key: string | null) => void;
   onRefresh: () => void;
   onPatch: (
     key: string,
