@@ -257,8 +257,9 @@ if ($mergeExitCode -ne 0) {
       [System.IO.File]::WriteAllText($tmpTheirs, $theirsContent, $utf8NoBom)
 
       # Three-way merge: keeps both sides' changes, conflicts → ours wins
+      # Exit codes: 0=clean, >0=N conflicts (resolved by --ours), <0=error
       git merge-file --ours $tmpOurs $tmpBase $tmpTheirs 2>$null
-      # merge-file exit codes: 0=clean, >0=had conflicts (resolved by --ours)
+      if ($LASTEXITCODE -lt 0) { throw "git merge-file returned error ($LASTEXITCODE)" }
       Copy-Item $tmpOurs $f -Force
       git add $f 2>&1 | Out-Null
       Write-Host "  MERGE: $f (three-way, ours wins conflicts)" -ForegroundColor Green
@@ -283,8 +284,11 @@ if ($mergeExitCode -ne 0) {
   }
 
   if ($restoreErrors) {
-    Write-Host "`nWARN: $($restoreErrors.Count) file(s) could not be auto-resolved. Fix manually:" -ForegroundColor Yellow
+    Write-Host "`nERROR: $($restoreErrors.Count) custom file(s) could not be auto-resolved:" -ForegroundColor Red
     $restoreErrors | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
+    Write-Host "Fix conflicts manually, then: git add . && git commit" -ForegroundColor Yellow
+    Write-Host "Rollback: git merge --abort; git checkout main; git branch -D $mergeBranch" -ForegroundColor Yellow
+    exit 1
   }
   git add -u
   git commit -m "chore: merge upstream/main $date (conflicts resolved — three-way strategy)"
@@ -326,16 +330,28 @@ Write-Host "`nVerifying custom files..." -ForegroundColor Cyan
 $verifyOk = Test-CustomFilesPresent -Files $CustomFiles
 
 # Step 9: Reproducible install + build + type-check
-Write-Host "`nInstalling dependencies (pnpm install --frozen-lockfile)..." -ForegroundColor Cyan
-pnpm install --frozen-lockfile
+# NOTE: pnpm-lock.yaml cannot be reliably text-merged (YAML semantics).
+# Always run `pnpm install` (without --frozen) after merge to regenerate
+# the lockfile with both our additions and upstream's new packages.
+# Then commit the updated lockfile if it changed.
+Write-Host "`nInstalling dependencies (regenerating lockfile after merge)..." -ForegroundColor Cyan
+pnpm install
 if ($LASTEXITCODE -ne 0) {
   Write-Host "ERROR: pnpm install FAILED." -ForegroundColor Red
   Write-Host "Rollback: git checkout main; git branch -D $mergeBranch" -ForegroundColor Yellow
   exit 1
 }
+$lockChanged = git status --porcelain pnpm-lock.yaml 2>&1
+if ($lockChanged) {
+  git add pnpm-lock.yaml
+  git commit -m "chore: regenerate pnpm-lock.yaml after upstream merge $date" --no-verify
+  Write-Host "  Lockfile regenerated and committed." -ForegroundColor Green
+} else {
+  Write-Host "  Lockfile unchanged." -ForegroundColor DarkGray
+}
 
 Write-Host "Rebuilding UI..." -ForegroundColor Cyan
-npm run ui:build
+pnpm run ui:build
 if ($LASTEXITCODE -ne 0) {
   Write-Host "ERROR: UI build FAILED." -ForegroundColor Red
   Write-Host "Rollback: git checkout main; git branch -D $mergeBranch" -ForegroundColor Yellow
