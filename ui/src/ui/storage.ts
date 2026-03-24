@@ -20,6 +20,9 @@ import { getSafeLocalStorage } from "../local-storage.ts";
 import { inferBasePathFromPathname, normalizeBasePath } from "./navigation.ts";
 import { parseThemeSelection, type ThemeMode, type ThemeName } from "./theme.ts";
 
+export const BORDER_RADIUS_STOPS = [0, 25, 50, 75, 100] as const;
+export type BorderRadiusStop = (typeof BORDER_RADIUS_STOPS)[number];
+
 export type UiSettings = {
   gatewayUrl: string;
   token: string;

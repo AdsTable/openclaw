@@ -69,7 +69,7 @@ import {
 import { loadLogs } from "./controllers/logs.ts";
 import { loadNodes } from "./controllers/nodes.ts";
 import { loadPresence } from "./controllers/presence.ts";
-import { deleteSessionAndRefresh, loadSessions, patchSession } from "./controllers/sessions.ts";
+import { deleteSessionsAndRefresh, loadSessions, patchSession } from "./controllers/sessions.ts";
 import {
   installSkill,
   loadSkills,
@@ -761,7 +761,7 @@ export function renderApp(state: AppViewState) {
                   },
                   onRefresh: () => loadSessions(state),
                   onPatch: (key, patch) => patchSession(state, key, patch),
-                  onDelete: (key) => deleteSessionAndRefresh(state, key),
+                  onDelete: (key) => deleteSessionsAndRefresh(state, [key]),
                 }),
               )
             : nothing
