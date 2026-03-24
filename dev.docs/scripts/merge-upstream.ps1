@@ -10,7 +10,7 @@
 #   6. Checkout main, pull ff-only, create TEMP merge branch
 #   7. Show upstream changelog + auto-detect $CustomFiles drift (WARN if unprotected files found)
 #   8. Merge upstream/main into temp branch; auto-restore $CustomFiles on conflict
-#   9. Post-merge verification + pnpm install --frozen-lockfile + build + typecheck (TS errors ABORT)
+#   9. Post-merge verification + pnpm install + build + postbuild (elevated) + typecheck (TS errors ABORT)
 #  10. Push merge branch; user manually fast-forwards main after review
 #
 # Recovery: git am dev.docs/patches/customizations-DATE.fmtpatch
@@ -364,6 +364,42 @@ if ($LASTEXITCODE -ne 0) {
   Write-Host "ERROR: tsdown FAILED." -ForegroundColor Red
   Write-Host "Rollback: git checkout main; git branch -D $mergeBranch" -ForegroundColor Yellow
   exit 1
+}
+
+# ── Runtime postbuild (requires admin for symlinks on Windows) ───────────────
+# runtime-postbuild.mjs creates symlinks in dist-runtime/ and dist/plugin-sdk/.
+# Windows requires Developer Mode OR elevated (admin) to create symlinks.
+# We auto-elevate via Start-Process -Verb RunAs and wait for completion.
+Write-Host "Running runtime-postbuild (elevated for symlink support)..." -ForegroundColor Cyan
+$postbuildLog = "$env:TEMP\openclaw-postbuild-$date.log"
+$postbuildScript = @"
+Set-Location '$RepoRoot'
+`$errors = @()
+node scripts/runtime-postbuild.mjs 2>&1 | Out-File '$postbuildLog' -Encoding UTF8
+if (`$LASTEXITCODE -ne 0) { `$errors += 'runtime-postbuild.mjs' }
+node --import tsx scripts/write-build-info.ts 2>&1 | Out-File '$postbuildLog' -Encoding UTF8 -Append
+if (`$LASTEXITCODE -ne 0) { `$errors += 'write-build-info.ts' }
+node --import tsx scripts/write-cli-startup-metadata.ts 2>&1 | Out-File '$postbuildLog' -Encoding UTF8 -Append
+if (`$LASTEXITCODE -ne 0) { `$errors += 'write-cli-startup-metadata.ts' }
+node --import tsx scripts/write-cli-compat.ts 2>&1 | Out-File '$postbuildLog' -Encoding UTF8 -Append
+if (`$LASTEXITCODE -ne 0) { `$errors += 'write-cli-compat.ts' }
+if (`$errors) { "POSTBUILD_FAILED:`$(`$errors -join ',')" | Out-File '$postbuildLog' -Append }
+else { "POSTBUILD_OK" | Out-File '$postbuildLog' -Append }
+"@
+$encodedScript = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($postbuildScript))
+Start-Process pwsh -Verb RunAs -ArgumentList "-NoProfile -EncodedCommand $encodedScript" -Wait
+$postbuildResult = Get-Content $postbuildLog -ErrorAction SilentlyContinue | Select-Object -Last 1
+if ($postbuildResult -match "^POSTBUILD_FAILED:(.+)$") {
+  Write-Host "ERROR: postbuild failed — $($Matches[1])" -ForegroundColor Red
+  Write-Host "  Log: $postbuildLog" -ForegroundColor DarkGray
+  Write-Host "  Run manually (as admin): node scripts/runtime-postbuild.mjs" -ForegroundColor Yellow
+  Write-Host "Rollback: git checkout main; git branch -D $mergeBranch" -ForegroundColor Yellow
+  exit 1
+} elseif ($postbuildResult -ne "POSTBUILD_OK") {
+  Write-Host "WARN: postbuild log missing or incomplete — verify manually." -ForegroundColor Yellow
+  Write-Host "  Log: $postbuildLog" -ForegroundColor DarkGray
+} else {
+  Write-Host "  Postbuild OK." -ForegroundColor Green
 }
 
 Write-Host "`nType-check..." -ForegroundColor Cyan
