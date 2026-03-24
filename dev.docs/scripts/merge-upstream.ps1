@@ -208,14 +208,17 @@ if ($mergeExitCode -ne 0) {
   Write-Host "`nCONFLICTS in:" -ForegroundColor Yellow
   $conflicts | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
 
-  # ── Strategy B: three-way merge per custom file ──────────────────────────
-  # Instead of blind `git checkout origin/main -- $f` (which loses upstream
-  # additions), we only restore custom files that are actually conflicted.
-  # For conflicted custom files we use `git checkout --ours` (keeps our version
-  # for that file) because the merge already incorporated upstream changes into
-  # non-conflicting hunks.  Non-conflicted files keep git's auto-merge result
-  # which correctly combines both sides.
-  Write-Host "`nResolving conflicts in custom files (three-way strategy)..." -ForegroundColor Cyan
+  # ── TRUE three-way merge per custom file ────────────────────────────────
+  # CRITICAL: `git checkout --ours` takes the ENTIRE pre-merge file, losing
+  # upstream's auto-merged hunks.  Instead, use `git merge-file --ours` which
+  # performs a real three-way merge: non-conflicting changes from BOTH sides
+  # are kept, only conflicting hunks resolve in favor of ours.
+  #
+  # During a merge conflict, git's index has three stages:
+  #   :1:file = common ancestor (merge base)
+  #   :2:file = ours  (HEAD, our branch)
+  #   :3:file = theirs (upstream/main)
+  Write-Host "`nResolving conflicts in custom files (true three-way merge)..." -ForegroundColor Cyan
   $restoreErrors = @()
   $conflictSet = [System.Collections.Generic.HashSet[string]]::new(
     [System.StringComparer]::OrdinalIgnoreCase
@@ -224,19 +227,30 @@ if ($mergeExitCode -ne 0) {
 
   foreach ($f in $CustomFiles) {
     $fNorm = $f.Replace('\','/')
-    if ($conflictSet.Contains($fNorm)) {
-      # File has conflict markers — take our side (preserves our customizations).
-      # Upstream non-conflicting hunks are already merged by git.
-      git checkout --ours -- $f 2>&1 | Out-Null
-      if ($LASTEXITCODE -eq 0) {
-        git add $f 2>&1 | Out-Null
-        Write-Host "  OURS: $f (conflicted → kept our version)" -ForegroundColor Yellow
-      } else {
-        Write-Host "  ERR : $f (checkout --ours failed)" -ForegroundColor Red
-        $restoreErrors += $f
-      }
+    if (-not $conflictSet.Contains($fNorm)) { continue }
+
+    # Extract three stages from git index
+    $tmpBase   = [System.IO.Path]::GetTempFileName()
+    $tmpOurs   = [System.IO.Path]::GetTempFileName()
+    $tmpTheirs = [System.IO.Path]::GetTempFileName()
+    try {
+      git show ":1:$f" 2>$null | Set-Content $tmpBase   -Encoding UTF8
+      git show ":2:$f" 2>$null | Set-Content $tmpOurs   -Encoding UTF8
+      git show ":3:$f" 2>$null | Set-Content $tmpTheirs -Encoding UTF8
+
+      # Three-way merge: keeps both sides' changes, conflicts → ours wins
+      git merge-file --ours $tmpOurs $tmpBase $tmpTheirs 2>$null
+      # merge-file exit codes: 0=clean, >0=had conflicts (resolved by --ours)
+      Copy-Item $tmpOurs $f -Force
+      git add $f 2>&1 | Out-Null
+      Write-Host "  MERGE: $f (three-way, ours wins conflicts)" -ForegroundColor Green
+    } catch {
+      Write-Host "  ERR  : $f (merge-file failed: $_)" -ForegroundColor Red
+      # Fallback: leave conflict markers for manual resolution
+      $restoreErrors += $f
+    } finally {
+      Remove-Item $tmpBase, $tmpOurs, $tmpTheirs -Force -ErrorAction SilentlyContinue
     }
-    # Non-conflicted custom files: git already merged them correctly — leave as-is.
   }
 
   # Resolve remaining non-custom conflicts by taking upstream version
@@ -251,7 +265,8 @@ if ($mergeExitCode -ne 0) {
   }
 
   if ($restoreErrors) {
-    Write-Host "`nWARN: $($restoreErrors.Count) file(s) could not be resolved. Review manually." -ForegroundColor Yellow
+    Write-Host "`nWARN: $($restoreErrors.Count) file(s) could not be auto-resolved. Fix manually:" -ForegroundColor Yellow
+    $restoreErrors | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
   }
   git add -u
   git commit -m "chore: merge upstream/main $date (conflicts resolved — three-way strategy)"
@@ -261,18 +276,24 @@ if ($mergeExitCode -ne 0) {
   Write-Host "Merge successful (no conflicts)." -ForegroundColor Green
 }
 
-# ── Strategy C: post-merge audit ──────────────────────────────────────────
-# After merge, diff each CustomFile against upstream to detect accidental
-# deletions.  This catches lines that upstream ADDED but our version lost
-# during conflict resolution.
-Write-Host "`nPost-merge audit — checking for accidentally removed upstream lines..." -ForegroundColor Cyan
+# ── Post-merge audit ──────────────────────────────────────────────────────
+# Compare each CustomFile's diff vs upstream BEFORE and AFTER merge.
+# If the number of removed lines INCREASED, we likely lost upstream additions.
+# This avoids false positives on files we intentionally modified (CSS, etc.).
+Write-Host "`nPost-merge audit — detecting NEW upstream line losses..." -ForegroundColor Cyan
 $auditIssues = @()
 foreach ($f in $CustomFiles) {
   if (-not (Test-Path $f)) { continue }
-  # Lines in upstream but missing from our merged version (potential regressions)
-  $removed = @(git diff upstream/main HEAD -- $f 2>&1 |
-    Select-String "^\-" | Where-Object { $_ -notmatch "^\-\-\-" })
-  if ($removed.Count -gt 20) {
+  # Lines removed vs upstream in the NEW merge result
+  $removedNow = @(git diff upstream/main HEAD -- $f 2>&1 |
+    Select-String "^\-" | Where-Object { $_ -notmatch "^\-\-\-" }).Count
+  # Lines removed vs upstream BEFORE merge (from backup tag)
+  $removedBefore = @(git diff upstream/main $backupTag -- $f 2>&1 |
+    Select-String "^\-" | Where-Object { $_ -notmatch "^\-\-\-" }).Count
+  $delta = $removedNow - $removedBefore
+  if ($delta -gt 10) {
+    $auditIssues += "  AUDIT: $f — $delta NEW lines lost vs upstream (was -$removedBefore, now -$removedNow)"
+  }
     $auditIssues += "  AUDIT: $f — $($removed.Count) lines removed vs upstream (review needed)"
   }
 }

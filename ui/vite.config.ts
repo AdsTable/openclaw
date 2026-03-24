@@ -20,6 +20,9 @@ function normalizeBase(input: string): string {
 
 export default defineConfig(() => {
   const envBase = process.env.OPENCLAW_CONTROL_UI_BASE_PATH?.trim();
+  // Fork fix: use absolute "/" instead of upstream's "./" to prevent SPA routes
+  // like /5 from breaking relative asset paths.  Sub-path deployments MUST set
+  // OPENCLAW_CONTROL_UI_BASE_PATH explicitly.
   const base = envBase ? normalizeBase(envBase) : "/";
   return {
     base,
