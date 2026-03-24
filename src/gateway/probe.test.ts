@@ -40,9 +40,15 @@ vi.mock("./client.js", () => ({
   GatewayClient: MockGatewayClient,
 }));
 
-const { probeGateway } = await import("./probe.js");
+const { clampProbeTimeoutMs, probeGateway } = await import("./probe.js");
 
 describe("probeGateway", () => {
+  it("clamps probe timeout to timer-safe bounds", () => {
+    expect(clampProbeTimeoutMs(1)).toBe(250);
+    expect(clampProbeTimeoutMs(2_000)).toBe(2_000);
+    expect(clampProbeTimeoutMs(3_000_000_000)).toBe(2_147_483_647);
+  });
+
   it("connects with operator.read scope", async () => {
     const result = await probeGateway({
       url: "ws://127.0.0.1:18789",
@@ -51,7 +57,7 @@ describe("probeGateway", () => {
     });
 
     expect(gatewayClientState.options?.scopes).toEqual(["operator.read"]);
-    expect(gatewayClientState.options?.deviceIdentity).toBeNull();
+    expect(gatewayClientState.options?.deviceIdentity).toBeUndefined();
     expect(gatewayClientState.requests).toEqual([
       "health",
       "status",
@@ -69,6 +75,15 @@ describe("probeGateway", () => {
     });
 
     expect(gatewayClientState.options?.deviceIdentity).toBeUndefined();
+  });
+
+  it("keeps device identity disabled for unauthenticated loopback probes", async () => {
+    await probeGateway({
+      url: "ws://127.0.0.1:18789",
+      timeoutMs: 1_000,
+    });
+
+    expect(gatewayClientState.options?.deviceIdentity).toBeNull();
   });
 
   it("skips detail RPCs for lightweight reachability probes", async () => {

@@ -16,10 +16,26 @@ function makeTempDir() {
 
 const mkdirSafe = mkdirSafeDir;
 
+function normalizePathForAssertion(value: string | undefined): string | undefined {
+  if (!value) {
+    return value;
+  }
+  return value.replace(/\\/g, "/");
+}
+
+function hasDiagnosticSourceSuffix(
+  diagnostics: Array<{ source?: string }>,
+  suffix: string,
+): boolean {
+  const normalizedSuffix = normalizePathForAssertion(suffix);
+  return diagnostics.some((entry) =>
+    normalizePathForAssertion(entry.source)?.endsWith(normalizedSuffix ?? suffix),
+  );
+}
+
 function buildDiscoveryEnv(stateDir: string): NodeJS.ProcessEnv {
   return {
     OPENCLAW_STATE_DIR: stateDir,
-    CLAWDBOT_STATE_DIR: undefined,
     OPENCLAW_HOME: undefined,
     OPENCLAW_BUNDLED_PLUGINS_DIR: "/nonexistent/bundled/plugins",
   };
@@ -179,7 +195,7 @@ describe("discoverOpenClawPlugins", () => {
     expect(ids).toContain("voice-call");
   });
 
-  it("normalizes bundled provider package ids to canonical plugin ids", async () => {
+  it("strips provider suffixes from package-derived ids", async () => {
     const stateDir = makeTempDir();
     const globalExt = path.join(stateDir, "extensions", "ollama-provider-pack");
     mkdirSafe(path.join(globalExt, "src"));
@@ -200,6 +216,46 @@ describe("discoverOpenClawPlugins", () => {
     const ids = candidates.map((c) => c.idHint);
     expect(ids).toContain("ollama");
     expect(ids).not.toContain("ollama-provider");
+  });
+
+  it("normalizes bundled speech package ids to canonical plugin ids", async () => {
+    const stateDir = makeTempDir();
+    const extensionsDir = path.join(stateDir, "extensions");
+    const elevenlabsDir = path.join(extensionsDir, "elevenlabs-speech-pack");
+    const microsoftDir = path.join(extensionsDir, "microsoft-speech-pack");
+
+    mkdirSafe(path.join(elevenlabsDir, "src"));
+    mkdirSafe(path.join(microsoftDir, "src"));
+
+    writePluginPackageManifest({
+      packageDir: elevenlabsDir,
+      packageName: "@openclaw/elevenlabs-speech",
+      extensions: ["./src/index.ts"],
+    });
+    writePluginPackageManifest({
+      packageDir: microsoftDir,
+      packageName: "@openclaw/microsoft-speech",
+      extensions: ["./src/index.ts"],
+    });
+
+    fs.writeFileSync(
+      path.join(elevenlabsDir, "src", "index.ts"),
+      "export default function () {}",
+      "utf-8",
+    );
+    fs.writeFileSync(
+      path.join(microsoftDir, "src", "index.ts"),
+      "export default function () {}",
+      "utf-8",
+    );
+
+    const { candidates } = await discoverWithStateDir(stateDir, {});
+
+    const ids = candidates.map((c) => c.idHint);
+    expect(ids).toContain("elevenlabs");
+    expect(ids).toContain("microsoft");
+    expect(ids).not.toContain("elevenlabs-speech");
+    expect(ids).not.toContain("microsoft-speech");
   });
 
   it("treats configured directory paths as plugin packages", async () => {
@@ -242,7 +298,9 @@ describe("discoverOpenClawPlugins", () => {
     expect(bundle?.format).toBe("bundle");
     expect(bundle?.bundleFormat).toBe("codex");
     expect(bundle?.source).toBe(bundleDir);
-    expect(bundle?.rootDir).toBe(fs.realpathSync.native(bundleDir));
+    expect(normalizePathForAssertion(bundle?.rootDir)).toBe(
+      normalizePathForAssertion(fs.realpathSync(bundleDir)),
+    );
   });
 
   it("auto-detects manifestless Claude bundles from the default layout", async () => {
@@ -296,9 +354,7 @@ describe("discoverOpenClawPlugins", () => {
 
     expect(legacy).toBeDefined();
     expect(legacy?.format).toBe("openclaw");
-    expect(
-      result.diagnostics.some((entry) => entry.source?.endsWith(".claude-plugin/plugin.json")),
-    ).toBe(true);
+    expect(hasDiagnosticSourceSuffix(result.diagnostics, ".claude-plugin/plugin.json")).toBe(true);
   });
 
   it("falls back to legacy index discovery for configured paths with malformed bundle sidecars", async () => {
@@ -317,9 +373,7 @@ describe("discoverOpenClawPlugins", () => {
 
     expect(legacy).toBeDefined();
     expect(legacy?.format).toBe("openclaw");
-    expect(
-      result.diagnostics.some((entry) => entry.source?.endsWith(".codex-plugin/plugin.json")),
-    ).toBe(true);
+    expect(hasDiagnosticSourceSuffix(result.diagnostics, ".codex-plugin/plugin.json")).toBe(true);
   });
 
   it("blocks extension entries that escape package directory", async () => {
@@ -339,6 +393,23 @@ describe("discoverOpenClawPlugins", () => {
 
     expect(result.candidates).toHaveLength(0);
     expectEscapesPackageDiagnostic(result.diagnostics);
+  });
+
+  it("skips missing package extension entries without escape diagnostics", async () => {
+    const stateDir = makeTempDir();
+    const globalExt = path.join(stateDir, "extensions", "missing-entry-pack");
+    mkdirSafe(globalExt);
+
+    writePluginPackageManifest({
+      packageDir: globalExt,
+      packageName: "@openclaw/missing-entry-pack",
+      extensions: ["./missing.ts"],
+    });
+
+    const result = await discoverWithStateDir(stateDir, {});
+
+    expect(result.candidates).toHaveLength(0);
+    expect(result.diagnostics).toEqual([]);
   });
 
   it("rejects package extension entries that escape via symlink", async () => {
@@ -464,7 +535,6 @@ describe("discoverOpenClawPlugins", () => {
         env: {
           ...process.env,
           OPENCLAW_STATE_DIR: stateDir,
-          CLAWDBOT_STATE_DIR: undefined,
           OPENCLAW_BUNDLED_PLUGINS_DIR: bundledDir,
         },
       });

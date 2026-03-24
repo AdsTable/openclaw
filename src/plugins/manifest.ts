@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { MANIFEST_KEY } from "../compat/legacy-names.js";
-import { openBoundaryFileSync } from "../infra/boundary-file-read.js";
+import { matchBoundaryFileOpenFailure, openBoundaryFileSync } from "../infra/boundary-file-read.js";
 import { isRecord } from "../utils.js";
 import type { PluginConfigUiHint, PluginKind } from "./types.js";
 
@@ -11,16 +11,51 @@ export const PLUGIN_MANIFEST_FILENAMES = [PLUGIN_MANIFEST_FILENAME] as const;
 export type PluginManifest = {
   id: string;
   configSchema: Record<string, unknown>;
+  enabledByDefault?: boolean;
   kind?: PluginKind;
   channels?: string[];
   providers?: string[];
+  /** Cheap provider-auth env lookup without booting plugin runtime. */
   providerAuthEnvVars?: Record<string, string[]>;
+  /**
+   * Cheap onboarding/auth-choice metadata used by config validation, CLI help,
+   * and non-runtime auth-choice routing before provider runtime loads.
+   */
+  providerAuthChoices?: PluginManifestProviderAuthChoice[];
   skills?: string[];
   name?: string;
   description?: string;
   version?: string;
   uiHints?: Record<string, PluginConfigUiHint>;
 };
+
+export type PluginManifestProviderAuthChoice = {
+  /** Provider id owned by this manifest entry. */
+  provider: string;
+  /** Provider auth method id that this choice should dispatch to. */
+  method: string;
+  /** Stable auth-choice id used by onboarding and other CLI auth flows. */
+  choiceId: string;
+  /** Optional user-facing choice label/hint for grouped onboarding UI. */
+  choiceLabel?: string;
+  choiceHint?: string;
+  /** Optional grouping metadata for auth-choice pickers. */
+  groupId?: string;
+  groupLabel?: string;
+  groupHint?: string;
+  /** Optional CLI flag metadata for one-flag auth flows such as API keys. */
+  optionKey?: string;
+  cliFlag?: string;
+  cliOption?: string;
+  cliDescription?: string;
+  /**
+   * Interactive onboarding surfaces where this auth choice should appear.
+   * Defaults to `["text-inference"]` when omitted.
+   */
+  onboardingScopes?: PluginManifestOnboardingScope[];
+};
+
+export type PluginManifestOnboardingScope = "text-inference" | "image-generation";
 
 export type PluginManifestLoadResult =
   | { ok: true; manifest: PluginManifest; manifestPath: string }
@@ -52,6 +87,56 @@ function normalizeStringListRecord(value: unknown): Record<string, string[]> | u
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
+function normalizeProviderAuthChoices(
+  value: unknown,
+): PluginManifestProviderAuthChoice[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const normalized: PluginManifestProviderAuthChoice[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) {
+      continue;
+    }
+    const provider = typeof entry.provider === "string" ? entry.provider.trim() : "";
+    const method = typeof entry.method === "string" ? entry.method.trim() : "";
+    const choiceId = typeof entry.choiceId === "string" ? entry.choiceId.trim() : "";
+    if (!provider || !method || !choiceId) {
+      continue;
+    }
+    const choiceLabel = typeof entry.choiceLabel === "string" ? entry.choiceLabel.trim() : "";
+    const choiceHint = typeof entry.choiceHint === "string" ? entry.choiceHint.trim() : "";
+    const groupId = typeof entry.groupId === "string" ? entry.groupId.trim() : "";
+    const groupLabel = typeof entry.groupLabel === "string" ? entry.groupLabel.trim() : "";
+    const groupHint = typeof entry.groupHint === "string" ? entry.groupHint.trim() : "";
+    const optionKey = typeof entry.optionKey === "string" ? entry.optionKey.trim() : "";
+    const cliFlag = typeof entry.cliFlag === "string" ? entry.cliFlag.trim() : "";
+    const cliOption = typeof entry.cliOption === "string" ? entry.cliOption.trim() : "";
+    const cliDescription =
+      typeof entry.cliDescription === "string" ? entry.cliDescription.trim() : "";
+    const onboardingScopes = normalizeStringList(entry.onboardingScopes).filter(
+      (scope): scope is PluginManifestOnboardingScope =>
+        scope === "text-inference" || scope === "image-generation",
+    );
+    normalized.push({
+      provider,
+      method,
+      choiceId,
+      ...(choiceLabel ? { choiceLabel } : {}),
+      ...(choiceHint ? { choiceHint } : {}),
+      ...(groupId ? { groupId } : {}),
+      ...(groupLabel ? { groupLabel } : {}),
+      ...(groupHint ? { groupHint } : {}),
+      ...(optionKey ? { optionKey } : {}),
+      ...(cliFlag ? { cliFlag } : {}),
+      ...(cliOption ? { cliOption } : {}),
+      ...(cliDescription ? { cliDescription } : {}),
+      ...(onboardingScopes.length > 0 ? { onboardingScopes } : {}),
+    });
+  }
+  return normalized.length > 0 ? normalized : undefined;
+}
+
 export function resolvePluginManifestPath(rootDir: string): string {
   for (const filename of PLUGIN_MANIFEST_FILENAMES) {
     const candidate = path.join(rootDir, filename);
@@ -74,14 +159,18 @@ export function loadPluginManifest(
     rejectHardlinks,
   });
   if (!opened.ok) {
-    if (opened.reason === "path") {
-      return { ok: false, error: `plugin manifest not found: ${manifestPath}`, manifestPath };
-    }
-    return {
-      ok: false,
-      error: `unsafe plugin manifest path: ${manifestPath} (${opened.reason})`,
-      manifestPath,
-    };
+    return matchBoundaryFileOpenFailure(opened, {
+      path: () => ({
+        ok: false,
+        error: `plugin manifest not found: ${manifestPath}`,
+        manifestPath,
+      }),
+      fallback: (failure) => ({
+        ok: false,
+        error: `unsafe plugin manifest path: ${manifestPath} (${failure.reason})`,
+        manifestPath,
+      }),
+    });
   }
   let raw: unknown;
   try {
@@ -108,12 +197,14 @@ export function loadPluginManifest(
   }
 
   const kind = typeof raw.kind === "string" ? (raw.kind as PluginKind) : undefined;
+  const enabledByDefault = raw.enabledByDefault === true;
   const name = typeof raw.name === "string" ? raw.name.trim() : undefined;
   const description = typeof raw.description === "string" ? raw.description.trim() : undefined;
   const version = typeof raw.version === "string" ? raw.version.trim() : undefined;
   const channels = normalizeStringList(raw.channels);
   const providers = normalizeStringList(raw.providers);
   const providerAuthEnvVars = normalizeStringListRecord(raw.providerAuthEnvVars);
+  const providerAuthChoices = normalizeProviderAuthChoices(raw.providerAuthChoices);
   const skills = normalizeStringList(raw.skills);
 
   let uiHints: Record<string, PluginConfigUiHint> | undefined;
@@ -126,10 +217,12 @@ export function loadPluginManifest(
     manifest: {
       id,
       configSchema,
+      ...(enabledByDefault ? { enabledByDefault } : {}),
       kind,
       channels,
       providers,
       providerAuthEnvVars,
+      providerAuthChoices,
       skills,
       name,
       description,
@@ -140,7 +233,7 @@ export function loadPluginManifest(
   };
 }
 
-// package.json "openclaw" metadata (used for onboarding/catalog)
+// package.json "openclaw" metadata (used for setup/catalog)
 export type PluginPackageChannel = {
   id?: string;
   label?: string;
@@ -166,6 +259,15 @@ export type PluginPackageInstall = {
   npmSpec?: string;
   localPath?: string;
   defaultChoice?: "npm" | "local";
+  minHostVersion?: string;
+};
+
+export type OpenClawPackageStartup = {
+  /**
+   * Opt-in for channel plugins whose `setupEntry` fully covers the gateway
+   * startup surface needed before the server starts listening.
+   */
+  deferConfiguredChannelFullLoadUntilAfterListen?: boolean;
 };
 
 export type OpenClawPackageManifest = {
@@ -173,6 +275,7 @@ export type OpenClawPackageManifest = {
   setupEntry?: string;
   channel?: PluginPackageChannel;
   install?: PluginPackageInstall;
+  startup?: OpenClawPackageStartup;
 };
 
 export const DEFAULT_PLUGIN_ENTRY_CANDIDATES = [

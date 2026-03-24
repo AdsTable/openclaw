@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { shouldBuildBundledCluster } from "./lib/optional-bundled-clusters.mjs";
 import {
   removeFileIfExists,
   removePathIfExists,
@@ -8,6 +9,8 @@ import {
 } from "./runtime-postbuild-shared.mjs";
 
 const GENERATED_BUNDLED_SKILLS_DIR = "bundled-skills";
+const TRANSIENT_COPY_ERROR_CODES = new Set(["EEXIST", "ENOENT", "ENOTEMPTY", "EBUSY"]);
+const COPY_RETRY_DELAYS_MS = [10, 25, 50];
 
 export function rewritePackageExtensions(entries) {
   if (!Array.isArray(entries)) {
@@ -82,6 +85,39 @@ function resolveBundledSkillTarget(rawPath) {
   };
 }
 
+function isTransientCopyError(error) {
+  return (
+    !!error &&
+    typeof error === "object" &&
+    typeof error.code === "string" &&
+    TRANSIENT_COPY_ERROR_CODES.has(error.code)
+  );
+}
+
+function sleepSync(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return;
+  }
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function copySkillPathWithRetry(params) {
+  const maxAttempts = COPY_RETRY_DELAYS_MS.length + 1;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      removePathIfExists(params.targetPath);
+      fs.mkdirSync(path.dirname(params.targetPath), { recursive: true });
+      fs.cpSync(params.sourcePath, params.targetPath, params.copyOptions);
+      return;
+    } catch (error) {
+      if (!isTransientCopyError(error) || attempt === maxAttempts - 1) {
+        throw error;
+      }
+      sleepSync(COPY_RETRY_DELAYS_MS[attempt] ?? 0);
+    }
+  }
+}
+
 function copyDeclaredPluginSkillPaths(params) {
   const skills = Array.isArray(params.manifest.skills) ? params.manifest.skills : [];
   const copiedSkills = [];
@@ -104,21 +140,23 @@ function copyDeclaredPluginSkillPaths(params) {
       continue;
     }
     const targetPath = ensurePathInsideRoot(params.distPluginDir, target.outputPath);
-    removePathIfExists(targetPath);
-    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
     const shouldExcludeNestedNodeModules = /^node_modules(?:\/|$)/u.test(
       normalizeManifestRelativePath(raw),
     );
-    fs.cpSync(sourcePath, targetPath, {
-      dereference: true,
-      force: true,
-      recursive: true,
-      filter: (candidatePath) => {
-        if (!shouldExcludeNestedNodeModules || candidatePath === sourcePath) {
-          return true;
-        }
-        const relativeCandidate = path.relative(sourcePath, candidatePath).replaceAll("\\", "/");
-        return !relativeCandidate.split("/").includes("node_modules");
+    copySkillPathWithRetry({
+      sourcePath,
+      targetPath,
+      copyOptions: {
+        dereference: true,
+        force: true,
+        recursive: true,
+        filter: (candidatePath) => {
+          if (!shouldExcludeNestedNodeModules || candidatePath === sourcePath) {
+            return true;
+          }
+          const relativeCandidate = path.relative(sourcePath, candidatePath).replaceAll("\\", "/");
+          return !relativeCandidate.split("/").includes("node_modules");
+        },
       },
     });
     copiedSkills.push(target.manifestPath);
@@ -126,8 +164,16 @@ function copyDeclaredPluginSkillPaths(params) {
   return copiedSkills;
 }
 
+/**
+ * @param {{
+ *   cwd?: string;
+ *   repoRoot?: string;
+ *   env?: NodeJS.ProcessEnv;
+ * }} [params]
+ */
 export function copyBundledPluginMetadata(params = {}) {
   const repoRoot = params.cwd ?? params.repoRoot ?? process.cwd();
+  const env = params.env ?? process.env;
   const extensionsRoot = path.join(repoRoot, "extensions");
   const distExtensionsRoot = path.join(repoRoot, "dist", "extensions");
   if (!fs.existsSync(extensionsRoot)) {
@@ -139,11 +185,21 @@ export function copyBundledPluginMetadata(params = {}) {
     if (!dirent.isDirectory()) {
       continue;
     }
-    sourcePluginDirs.add(dirent.name);
 
     const pluginDir = path.join(extensionsRoot, dirent.name);
     const manifestPath = path.join(pluginDir, "openclaw.plugin.json");
     const distPluginDir = path.join(distExtensionsRoot, dirent.name);
+    const packageJsonPath = path.join(pluginDir, "package.json");
+    const packageJson = fs.existsSync(packageJsonPath)
+      ? JSON.parse(fs.readFileSync(packageJsonPath, "utf8"))
+      : undefined;
+    if (!shouldBuildBundledCluster(dirent.name, env, { packageJson })) {
+      removePathIfExists(distPluginDir);
+      continue;
+    }
+
+    sourcePluginDirs.add(dirent.name);
+
     const distManifestPath = path.join(distPluginDir, "openclaw.plugin.json");
     const distPackageJsonPath = path.join(distPluginDir, "package.json");
     if (!fs.existsSync(manifestPath)) {
@@ -167,13 +223,10 @@ export function copyBundledPluginMetadata(params = {}) {
       : manifest;
     writeTextFileIfChanged(distManifestPath, `${JSON.stringify(bundledManifest, null, 2)}\n`);
 
-    const packageJsonPath = path.join(pluginDir, "package.json");
     if (!fs.existsSync(packageJsonPath)) {
       removeFileIfExists(distPackageJsonPath);
       continue;
     }
-
-    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
     if (packageJson.openclaw && "extensions" in packageJson.openclaw) {
       packageJson.openclaw = {
         ...packageJson.openclaw,

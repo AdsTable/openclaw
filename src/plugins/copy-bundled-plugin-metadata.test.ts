@@ -1,13 +1,18 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   copyBundledPluginMetadata,
   rewritePackageExtensions,
 } from "../../scripts/copy-bundled-plugin-metadata.mjs";
 
 const tempDirs: string[] = [];
+const excludeOptionalEnv = { OPENCLAW_INCLUDE_OPTIONAL_BUNDLED: "0" } as const;
+const copyBundledPluginMetadataWithEnv = copyBundledPluginMetadata as (params?: {
+  repoRoot?: string;
+  env?: NodeJS.ProcessEnv;
+}) => void;
 
 function makeRepoRoot(prefix: string): string {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -237,6 +242,47 @@ describe("copyBundledPluginMetadata", () => {
     expect(fs.existsSync(staleNodeModulesDir)).toBe(false);
   });
 
+  it("retries transient skill copy races from concurrent runtime postbuilds", () => {
+    const repoRoot = makeRepoRoot("openclaw-bundled-plugin-retry-");
+    const pluginDir = path.join(repoRoot, "extensions", "diffs");
+    fs.mkdirSync(path.join(pluginDir, "skills", "diffs"), { recursive: true });
+    fs.writeFileSync(path.join(pluginDir, "skills", "diffs", "SKILL.md"), "# Diffs\n", "utf8");
+    writeJson(path.join(pluginDir, "openclaw.plugin.json"), {
+      id: "diffs",
+      configSchema: { type: "object" },
+      skills: ["./skills"],
+    });
+    writeJson(path.join(pluginDir, "package.json"), {
+      name: "@openclaw/diffs",
+      openclaw: { extensions: ["./index.ts"] },
+    });
+
+    const realCpSync = fs.cpSync.bind(fs);
+    let attempts = 0;
+    const cpSyncSpy = vi.spyOn(fs, "cpSync").mockImplementation((...args) => {
+      attempts += 1;
+      if (attempts === 1) {
+        const error = Object.assign(new Error("race"), { code: "EEXIST" });
+        throw error;
+      }
+      return realCpSync(...args);
+    });
+
+    try {
+      copyBundledPluginMetadata({ repoRoot });
+    } finally {
+      cpSyncSpy.mockRestore();
+    }
+
+    expect(attempts).toBe(2);
+    expect(
+      fs.readFileSync(
+        path.join(repoRoot, "dist", "extensions", "diffs", "skills", "diffs", "SKILL.md"),
+        "utf8",
+      ),
+    ).toContain("Diffs");
+  });
+
   it("removes generated outputs for plugins no longer present in source", () => {
     const repoRoot = makeRepoRoot("openclaw-bundled-plugin-removed-");
     const staleBundledSkillDir = path.join(
@@ -296,5 +342,44 @@ describe("copyBundledPluginMetadata", () => {
     copyBundledPluginMetadata({ repoRoot });
 
     expect(fs.existsSync(staleDistDir)).toBe(false);
+  });
+
+  it("skips metadata for optional bundled clusters only when explicitly disabled", () => {
+    const repoRoot = makeRepoRoot("openclaw-bundled-plugin-optional-skip-");
+    const pluginDir = path.join(repoRoot, "extensions", "acpx");
+    fs.mkdirSync(pluginDir, { recursive: true });
+    writeJson(path.join(pluginDir, "openclaw.plugin.json"), {
+      id: "acpx",
+      configSchema: { type: "object" },
+    });
+    writeJson(path.join(pluginDir, "package.json"), {
+      name: "@openclaw/acpx-plugin",
+      openclaw: { extensions: ["./index.ts"] },
+    });
+
+    copyBundledPluginMetadataWithEnv({ repoRoot, env: excludeOptionalEnv });
+
+    expect(fs.existsSync(path.join(repoRoot, "dist", "extensions", "acpx"))).toBe(false);
+  });
+
+  it("still bundles previously released optional plugins without the opt-in env", () => {
+    const repoRoot = makeRepoRoot("openclaw-bundled-plugin-released-optional-");
+    const pluginDir = path.join(repoRoot, "extensions", "whatsapp");
+    fs.mkdirSync(pluginDir, { recursive: true });
+    writeJson(path.join(pluginDir, "openclaw.plugin.json"), {
+      id: "whatsapp",
+      configSchema: { type: "object" },
+    });
+    writeJson(path.join(pluginDir, "package.json"), {
+      name: "@openclaw/whatsapp",
+      openclaw: {
+        extensions: ["./index.ts"],
+        install: { npmSpec: "@openclaw/whatsapp" },
+      },
+    });
+
+    copyBundledPluginMetadataWithEnv({ repoRoot, env: {} });
+
+    expect(fs.existsSync(path.join(repoRoot, "dist", "extensions", "whatsapp"))).toBe(true);
   });
 });

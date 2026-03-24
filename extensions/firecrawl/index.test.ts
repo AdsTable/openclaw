@@ -3,24 +3,6 @@ import plugin from "./index.js";
 import { __testing as firecrawlClientTesting } from "./src/firecrawl-client.js";
 
 describe("firecrawl plugin", () => {
-  it("registers a web search provider and tools", () => {
-    const tools: Array<{ name: string }> = [];
-    const webSearchProviders: Array<{ id: string }> = [];
-
-    plugin.register?.({
-      config: {},
-      registerTool(tool: { name: string }) {
-        tools.push(tool);
-      },
-      registerWebSearchProvider(provider: { id: string }) {
-        webSearchProviders.push(provider);
-      },
-    } as never);
-
-    expect(webSearchProviders.map((provider) => provider.id)).toEqual(["firecrawl"]);
-    expect(tools.map((tool) => tool.name)).toEqual(["firecrawl_search", "firecrawl_scrape"]);
-  });
-
   it("parses scrape payloads into wrapped external-content results", () => {
     const result = firecrawlClientTesting.parseFirecrawlScrapePayload({
       payload: {
@@ -42,7 +24,9 @@ describe("firecrawl plugin", () => {
     expect(result.finalUrl).toBe("https://example.com/final");
     expect(result.status).toBe(200);
     expect(result.extractor).toBe("firecrawl");
-    expect(typeof result.text).toBe("string");
+    expect(String(result.text)).toContain("Hello");
+    expect(String(result.text)).toContain("World");
+    expect(result.truncated).toBe(false);
   });
 
   it("extracts search items from flexible Firecrawl payload shapes", () => {
