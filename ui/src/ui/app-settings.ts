@@ -303,9 +303,11 @@ export function inferBasePath() {
     return normalizeBasePath(configured);
   }
   const inferred = inferBasePathFromPathname(window.location.pathname);
-  // Reject inferred base paths that are a single numeric/UUID-like segment —
+  // Reject inferred base paths that are a single pure-numeric segment —
   // those are SPA routes (e.g. session IDs like /5, /42), not mount prefixes.
-  if (inferred && /^\/[0-9a-f-]{1,36}$/i.test(inferred)) {
+  // Only reject pure digits to avoid false positives on valid base paths
+  // like /cafe, /bead, etc.
+  if (inferred && /^\/\d+$/.test(inferred)) {
     return "";
   }
   return inferred;

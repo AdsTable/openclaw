@@ -229,14 +229,32 @@ if ($mergeExitCode -ne 0) {
     $fNorm = $f.Replace('\','/')
     if (-not $conflictSet.Contains($fNorm)) { continue }
 
-    # Extract three stages from git index
+    # Extract three stages from git index using BOM-free UTF8 + LF
+    # CRITICAL: Set-Content converts LF→CRLF on Windows, corrupting merge.
+    # Use WriteAllText with explicit UTF8-no-BOM encoding.
     $tmpBase   = [System.IO.Path]::GetTempFileName()
     $tmpOurs   = [System.IO.Path]::GetTempFileName()
     $tmpTheirs = [System.IO.Path]::GetTempFileName()
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
     try {
-      git show ":1:$f" 2>$null | Set-Content $tmpBase   -Encoding UTF8
-      git show ":2:$f" 2>$null | Set-Content $tmpOurs   -Encoding UTF8
-      git show ":3:$f" 2>$null | Set-Content $tmpTheirs -Encoding UTF8
+      $baseContent   = (git show ":1:$f" 2>$null) -join "`n"
+      $oursContent   = (git show ":2:$f" 2>$null) -join "`n"
+      $theirsContent = (git show ":3:$f" 2>$null) -join "`n"
+
+      # Stage 1 (base) may not exist for newly added files;
+      # Stage 2 (ours) missing means file is new from upstream only.
+      if (-not $baseContent -and -not $oursContent) {
+        # File is new in upstream, not in ours — take theirs
+        git checkout --theirs -- $f 2>&1 | Out-Null
+        git add $f 2>&1 | Out-Null
+        Write-Host "  THEIRS: $f (new upstream file)" -ForegroundColor DarkGray
+        continue
+      }
+      if (-not $baseContent) { $baseContent = "" }
+
+      [System.IO.File]::WriteAllText($tmpBase,   $baseContent,   $utf8NoBom)
+      [System.IO.File]::WriteAllText($tmpOurs,   $oursContent,   $utf8NoBom)
+      [System.IO.File]::WriteAllText($tmpTheirs, $theirsContent, $utf8NoBom)
 
       # Three-way merge: keeps both sides' changes, conflicts → ours wins
       git merge-file --ours $tmpOurs $tmpBase $tmpTheirs 2>$null
@@ -293,8 +311,6 @@ foreach ($f in $CustomFiles) {
   $delta = $removedNow - $removedBefore
   if ($delta -gt 10) {
     $auditIssues += "  AUDIT: $f — $delta NEW lines lost vs upstream (was -$removedBefore, now -$removedNow)"
-  }
-    $auditIssues += "  AUDIT: $f — $($removed.Count) lines removed vs upstream (review needed)"
   }
 }
 if ($auditIssues) {
