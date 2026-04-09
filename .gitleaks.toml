@@ -36,3 +36,9 @@ title = "AdsTable OpenClaw Secret Scanning"
   description = "Detect private keys"
   regex = '''-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----'''
   tags = ["key", "private"]
+
+[[rules]]
+  id = "google-oauth-client-secret"
+  description = "Detect Google OAuth client secrets"
+  regex = '''GOCSPX-[A-Za-z0-9_\-]{28}'''
+  tags = ["google", "oauth", "secret"]
