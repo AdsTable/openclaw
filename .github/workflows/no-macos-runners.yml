@@ -1,0 +1,109 @@
+name: Enforce banned CI tools
+
+# Runs on every PR that touches workflow files.
+# Fails if any workflow introduces banned expensive or irrelevant tooling.
+# Banned: macOS runners, Swift/Xcode, Android/Gradle native CI.
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+      - '.github/dependabot.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check-banned-ci-tools:
+    name: No banned CI tools allowed
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # --- 1. macOS runners ---
+      - name: Fail if any workflow uses a macOS runner
+        run: |
+          set -euo pipefail
+          # Matches: runs-on: macos-latest / macos-14 / macos-* etc.
+          if grep -rn 'runs-on:.*macos' .github/workflows/ \
+               --include='*.yml' --include='*.yaml'; then
+            echo ""
+            echo "ERROR: macOS runners are BANNED in this repository."
+            echo "Cost: ~\$0.08/min = 10x more expensive than Linux (\$0.008/min)."
+            echo "Fix: replace with 'ubuntu-latest' or 'windows-latest'."
+            exit 1
+          fi
+          echo "OK: No macOS runners found."
+
+      # --- 2. Swift / Xcode / iOS tooling ---
+      - name: Fail if any workflow uses Swift or Xcode tooling
+        run: |
+          set -euo pipefail
+          BANNED_SWIFT=(
+            'xcode-select'
+            'xcodebuild'
+            'swift build'
+            'swift test'
+            'swift package'
+            'swiftlint'
+            'swiftformat'
+            'xcodegen'
+          )
+          FOUND=0
+          for pattern in "${BANNED_SWIFT[@]}"; do
+            if grep -rn "$pattern" .github/workflows/ \
+                 --include='*.yml' --include='*.yaml'; then
+              echo "ERROR: Banned Swift/Xcode tool detected: '$pattern'"
+              FOUND=1
+            fi
+          done
+          if [ "$FOUND" -eq 1 ]; then
+            echo ""
+            echo "ERROR: Swift/Xcode CI tooling is BANNED."
+            echo "Reason: This is a Windows/Node.js project. No iOS/macOS builds needed."
+            exit 1
+          fi
+          echo "OK: No Swift/Xcode tooling found."
+
+      # --- 3. Android / Gradle native CI ---
+      - name: Fail if any workflow uses Android or Gradle native CI
+        run: |
+          set -euo pipefail
+          BANNED_ANDROID=(
+            'gradle'
+            'gradlew'
+            'android-sdk'
+            'avdmanager'
+            'sdkmanager'
+            'emulator'
+          )
+          FOUND=0
+          for pattern in "${BANNED_ANDROID[@]}"; do
+            if grep -rn "$pattern" .github/workflows/ \
+                 --include='*.yml' --include='*.yaml'; then
+              echo "WARNING: Potentially banned Android/Gradle tool: '$pattern'"
+              FOUND=1
+            fi
+          done
+          if [ "$FOUND" -eq 1 ]; then
+            echo ""
+            echo "ERROR: Android/Gradle native CI tooling is BANNED."
+            echo "Reason: No Android native CI needed. Use ubuntu-latest for Node.js builds."
+            exit 1
+          fi
+          echo "OK: No Android/Gradle native CI tooling found."
+
+      # --- 4. large/expensive self-hosted runner labels ---
+      - name: Warn on very large runners (32vcpu+)
+        run: |
+          set -euo pipefail
+          # 32vcpu runners cost 8x a standard runner — flag for review
+          if grep -rn 'blacksmith-32vcpu\|ubuntu-32core\|windows-32core' \
+               .github/workflows/ --include='*.yml' --include='*.yaml'; then
+            echo ""
+            echo "WARNING: 32-vCPU runner detected. These are expensive — verify necessity."
+            echo "Consider using blacksmith-16vcpu-ubuntu-2404 instead."
+            # Not failing — just alerting. Remove 'exit 1' to keep as warning only.
+          fi
+          echo "OK: Large-runner check complete."
