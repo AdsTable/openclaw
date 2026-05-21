@@ -35,7 +35,18 @@ function ensureSymlink(targetValue, targetPath, type) {
 }
 
 function symlinkPath(sourcePath, targetPath, type) {
-  ensureSymlink(relativeSymlinkTarget(sourcePath, targetPath), targetPath, type);
+  const targetValue = relativeSymlinkTarget(sourcePath, targetPath);
+  try {
+    ensureSymlink(targetValue, targetPath, type);
+    return;
+  } catch (error) {
+    if (!(process.platform === "win32" && error?.code === "EPERM")) {
+      throw error;
+    }
+  }
+
+  removePathIfExists(targetPath);
+  fs.copyFileSync(sourcePath, targetPath);
 }
 
 function shouldWrapRuntimeJsFile(sourcePath) {
